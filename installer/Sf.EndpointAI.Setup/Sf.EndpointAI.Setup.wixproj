@@ -1,16 +1,17 @@
 <Project Sdk="WixToolset.Sdk/6.0.2">
   <PropertyGroup>
-    <OutputName>Sf.EndpointAI.Proxy.Setup</OutputName>
+    <OutputName>EndpointAIDLP-Client-0.1.22-win-x64</OutputName>
     <OutputType>Package</OutputType>
     <Platform>x64</Platform>
-    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.22</ProductVersion>
     <ServicePublishDir Condition="'$(ServicePublishDir)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\publish\service</ServicePublishDir>
-    <ControlServerOrigin Condition="'$(ControlServerOrigin)' == ''">https://127.0.0.1:18443</ControlServerOrigin>
-    <ControlEnrollmentToken Condition="'$(ControlEnrollmentToken)' == ''">BUILD_VALUE_REQUIRED</ControlEnrollmentToken>
-    <ControlPolicyHmacKey Condition="'$(ControlPolicyHmacKey)' == ''">BUILD_VALUE_REQUIRED</ControlPolicyHmacKey>
-    <ControlServerCertificateSpkiSha256 Condition="'$(ControlServerCertificateSpkiSha256)' == ''">BUILD_VALUE_REQUIRED</ControlServerCertificateSpkiSha256>
-    <DefineConstants>ProductVersion=$(ProductVersion);ServicePublishDir=$(ServicePublishDir);ControlServerOrigin=$(ControlServerOrigin);ControlEnrollmentToken=$(ControlEnrollmentToken);ControlPolicyHmacKey=$(ControlPolicyHmacKey);ControlServerCertificateSpkiSha256=$(ControlServerCertificateSpkiSha256)</DefineConstants>
+    <ProductionInputDir Condition="'$(ProductionInputDir)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\private-msi-input</ProductionInputDir>
+    <InstallerActionsDir Condition="'$(InstallerActionsDir)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\publish\installer-actions</InstallerActionsDir>
+    <DefineConstants>InstallerActionsDir=$(InstallerActionsDir);ProductVersion=$(ProductVersion);ServicePublishDir=$(ServicePublishDir);ProductionInputDir=$(ProductionInputDir)</DefineConstants>
   </PropertyGroup>
+  <Target Name="RequirePrivateCredentials" BeforeTargets="Build">
+    <Error Condition="!Exists('$(ProductionInputDir)\client-credentials.json')" Text="Run Build-ProductionPackage.ps1 with private client credentials." />
+  </Target>
   <ItemGroup>
     <PackageReference Include="WixToolset.Util.wixext" />
   </ItemGroup>

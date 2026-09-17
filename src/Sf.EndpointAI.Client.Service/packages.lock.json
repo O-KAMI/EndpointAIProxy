@@ -61,7 +61,7 @@
         "type": "Project",
         "dependencies": {
           "Microsoft.Data.Sqlite": "[10.0.11, )",
-          "Sf.EndpointAI.Contracts": "[1.0.0, )",
+          "Sf.EndpointAI.Contracts": "[0.1.22, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.0, )"
         }
       },

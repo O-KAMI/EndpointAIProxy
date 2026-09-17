@@ -172,7 +172,8 @@ if (autoAttachEnabled)
 }
 
 var controlServerOriginText = Environment.GetEnvironmentVariable("SF_PROXY_CONTROL_ORIGIN")
-    ?? ReadMachineSetting("ControlServerOrigin");
+    ?? ReadMachineSetting("ControlServerOrigin")
+    ?? "http://control.example.invalid:8080";
 if (!string.IsNullOrWhiteSpace(controlServerOriginText))
 {
     var controlOptions = RemoteControlClient.ValidateOptions(new RemoteControlOptions(
@@ -184,8 +185,12 @@ if (!string.IsNullOrWhiteSpace(controlServerOriginText))
             ?? throw new InvalidOperationException("SF_PROXY_CONTROL_HMAC_KEY is required when control synchronization is enabled.")),
         Environment.GetEnvironmentVariable("SF_PROXY_CONTROL_SERVER_CERTIFICATE_SPKI_SHA256")
             ?? ReadMachineSetting("ControlServerCertificateSpkiSha256")
-            ?? throw new InvalidOperationException(
-                "SF_PROXY_CONTROL_SERVER_CERTIFICATE_SPKI_SHA256 is required when control synchronization is enabled.")));
+            ?? "",
+        Convert.FromBase64String(Environment.GetEnvironmentVariable("SF_PROXY_CONTROL_TRANSPORT_KEY")
+            ?? ReadMachineSetting("ControlTransportKey")
+            ?? throw new InvalidOperationException("SF_PROXY_CONTROL_TRANSPORT_KEY is required.")),
+        Environment.GetEnvironmentVariable("SF_PROXY_CONTROL_TRANSPORT_KEY_ID")
+            ?? ReadMachineSetting("ControlTransportKeyId") ?? "production-2026-01"));
     builder.Services.AddSingleton(controlOptions);
     builder.Services.AddSingleton(new RemoteControlClient(CreateControlHttpClient(controlOptions), controlOptions));
     builder.Services.AddSingleton<RemoteCommandExecutor>();
@@ -935,7 +940,8 @@ static HttpClient CreateForwardingClient()
 
 static HttpClient CreateControlHttpClient(RemoteControlOptions options)
 {
-    var expectedPin = ControlServerCertificateValidator.ParsePin(options.ServerCertificateSpkiSha256);
+    var expectedPin = options.TransportKey is null
+        ? ControlServerCertificateValidator.ParsePin(options.ServerCertificateSpkiSha256) : [];
     var handler = new SocketsHttpHandler
     {
         AllowAutoRedirect = false,
@@ -945,7 +951,8 @@ static HttpClient CreateControlHttpClient(RemoteControlOptions options)
         ConnectTimeout = TimeSpan.FromSeconds(10),
         PooledConnectionLifetime = TimeSpan.FromMinutes(5),
     };
-    handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, errors) =>
+    if (options.TransportKey is null)
+        handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, errors) =>
     {
         if (certificate is System.Security.Cryptography.X509Certificates.X509Certificate2 certificate2)
         {
