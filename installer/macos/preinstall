@@ -1,0 +1,5 @@
+#!/bin/zsh
+set -eu
+
+/bin/launchctl bootout system/com.sf.endpointai.proxy >/dev/null 2>&1 || true
+exit 0

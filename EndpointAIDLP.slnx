@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Sf.EndpointAI.Contracts/Sf.EndpointAI.Contracts.csproj" />
+    <Project Path="src/Sf.EndpointAI.Client.Core/Sf.EndpointAI.Client.Core.csproj" />
+    <Project Path="src/Sf.EndpointAI.Client.Service/Sf.EndpointAI.Client.Service.csproj" />
+    <Project Path="src/Sf.EndpointAI.ControlServer/Sf.EndpointAI.ControlServer.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/Sf.EndpointAI.CertificateTool/Sf.EndpointAI.CertificateTool.csproj" />
+    <Project Path="tools/Sf.EndpointAI.MockLab/Sf.EndpointAI.MockLab.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Sf.EndpointAI.UnitTests/Sf.EndpointAI.UnitTests.csproj" />
+  </Folder>
+</Solution>

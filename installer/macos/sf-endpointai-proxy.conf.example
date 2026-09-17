@@ -1,0 +1,9 @@
+# Root-owned environment file for com.sf.endpointai.proxy.
+# Keep permissions at 0600 because the values below are credentials.
+
+# SF_PROXY_CONTROL_ORIGIN="https://control-server.example:18443"
+# SF_PROXY_CONTROL_TOKEN="replace-with-enrollment-token"
+# SF_PROXY_CONTROL_HMAC_KEY="replace-with-base64-key"
+# SF_PROXY_CONTROL_SERVER_CERTIFICATE_SPKI_SHA256="replace-with-base64-pin"
+# SF_PROXY_GATEWAY_HMAC_KEY="replace-with-base64-key"
+# SF_PROXY_DEVICE_ID="replace-with-device-guid"

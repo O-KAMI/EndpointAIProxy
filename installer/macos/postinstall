@@ -1,0 +1,25 @@
+#!/bin/zsh
+set -eu
+
+DATA_ROOT="/Library/Application Support/SF/EndpointAIProxy"
+CONFIG_FILE="/etc/sf-endpointai-proxy.conf"
+CONFIG_TEMPLATE="/usr/local/share/sf-endpointai-proxy/sf-endpointai-proxy.conf.example"
+PLIST="/Library/LaunchDaemons/com.sf.endpointai.proxy.plist"
+
+/bin/mkdir -p "$DATA_ROOT/state" "$DATA_ROOT/captures" "$DATA_ROOT/logs/service" \
+  "$DATA_ROOT/config-backups" "$DATA_ROOT/.net"
+/usr/sbin/chown -R root:wheel "$DATA_ROOT"
+/bin/chmod 0750 "$DATA_ROOT" "$DATA_ROOT/state" "$DATA_ROOT/captures" \
+  "$DATA_ROOT/logs" "$DATA_ROOT/logs/service" "$DATA_ROOT/config-backups" "$DATA_ROOT/.net"
+
+if [[ ! -e "$CONFIG_FILE" ]]; then
+  /usr/bin/install -o root -g wheel -m 0600 "$CONFIG_TEMPLATE" "$CONFIG_FILE"
+fi
+
+/usr/sbin/chown root:wheel "$PLIST"
+/bin/chmod 0644 "$PLIST"
+/usr/bin/plutil -lint "$PLIST"
+/bin/launchctl bootstrap system "$PLIST"
+/bin/launchctl enable system/com.sf.endpointai.proxy
+/bin/launchctl kickstart -k system/com.sf.endpointai.proxy
+exit 0

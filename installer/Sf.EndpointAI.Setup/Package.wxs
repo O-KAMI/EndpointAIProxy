@@ -1,0 +1,147 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="顺丰终端 AI 请求代理"
+           Manufacturer="SF"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="643CFDA1-3A12-4C57-BD65-5F6106CBAB90"
+           Scope="perMachine"
+           Codepage="936"
+           InstallerVersion="500">
+    <Property Id="CONTROL_SERVER_ORIGIN" Value="$(var.ControlServerOrigin)" Secure="yes" />
+    <Property Id="CONTROL_ENROLLMENT_TOKEN" Value="$(var.ControlEnrollmentToken)" Secure="yes" Hidden="yes" />
+    <Property Id="CONTROL_POLICY_HMAC_KEY" Value="$(var.ControlPolicyHmacKey)" Secure="yes" Hidden="yes" />
+    <Property Id="CONTROL_SERVER_CERTIFICATE_SPKI_SHA256"
+              Value="$(var.ControlServerCertificateSpkiSha256)"
+              Secure="yes"
+              Hidden="yes" />
+    <MajorUpgrade DowngradeErrorMessage="已安装更高版本的顺丰终端 AI 请求代理。" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="low" />
+    <util:CloseApplication Id="CloseLegacyTrayApplication"
+                           Target="Sf.EndpointAI.Client.Tray.exe"
+                           CloseMessage="yes"
+                           ElevatedCloseMessage="yes"
+                           ElevatedEndSessionMessage="yes"
+                           Timeout="5"
+                           TerminateProcess="0"
+                           RebootPrompt="no" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="SfProgramDirectory" Name="SF">
+        <Directory Id="INSTALLFOLDER" Name="Endpoint AI Proxy">
+          <Directory Id="DIAGNOSTICSFOLDER" Name="diagnostics" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="SfDataDirectory" Name="SF">
+        <Directory Id="DATAFOLDER" Name="EndpointAIProxy" />
+      </Directory>
+    </StandardDirectory>
+
+    <Component Id="ProxyServiceComponent" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="ProxyServiceExecutable"
+            Source="$(var.ServicePublishDir)\Sf.EndpointAI.Client.Service.exe"
+            KeyPath="yes" />
+      <ServiceInstall Id="ProxyServiceInstall"
+                      Name="SfEndpointAIProxy"
+                      DisplayName="顺丰终端 AI 请求代理"
+                      Description="发现并挂载受支持的 AI Agent，将模型请求经受管路由转发并留痕。"
+                      Type="ownProcess"
+                      Arguments="--auto-attach=true --route-mode=FixedGateway --gateway-origin=http://gateway.example.invalid --allow-insecure-gateway=true"
+                      Start="auto"
+                      ErrorControl="normal"
+                      Vital="yes" />
+      <ServiceControl Id="ProxyServiceControl"
+                      Name="SfEndpointAIProxy"
+                      Start="install"
+                      Stop="both"
+                      Remove="uninstall"
+                      Wait="yes" />
+    </Component>
+
+    <Component Id="DiagnosticCommandComponent" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="DiagnosticCommandFile"
+            Source="$(var.ServicePublishDir)\Collect-Diagnostics.cmd"
+            KeyPath="yes" />
+      <RemoveFile Id="RemoveLegacyTrayExecutable"
+                  Name="Sf.EndpointAI.Client.Tray.exe"
+                  On="install" />
+      <RemoveRegistryValue Root="HKLM"
+                           Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                           Name="SF Endpoint AI Proxy Tray" />
+    </Component>
+
+    <Component Id="UninstallCommandComponent" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="UninstallCommandFile"
+            Source="$(var.ServicePublishDir)\Uninstall-EndpointAI.cmd"
+            KeyPath="yes" />
+    </Component>
+
+    <Component Id="DiagnosticOutputDirectoryComponent" Directory="DIAGNOSTICSFOLDER" Guid="*">
+      <CreateFolder>
+        <PermissionEx Sddl="D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+      </CreateFolder>
+      <RegistryKey Root="HKLM"
+                   Key="Software\SF\EndpointAIProxy"
+                   ForceCreateOnInstall="yes">
+        <PermissionEx Sddl="D:P(A;;KA;;;SY)(A;;KA;;;BA)" />
+        <RegistryValue Name="DiagnosticsDirectoryInstalled"
+                       Value="1"
+                       Type="integer"
+                       KeyPath="yes" />
+        <RegistryValue Name="ProductCode"
+                       Value="[ProductCode]"
+                       Type="string" />
+        <RegistryValue Name="DisplayVersion"
+                       Value="[ProductVersion]"
+                       Type="string" />
+        <RegistryValue Name="ControlServerOrigin"
+                       Value="[CONTROL_SERVER_ORIGIN]"
+                       Type="string" />
+        <RegistryValue Name="ControlEnrollmentToken"
+                       Value="[CONTROL_ENROLLMENT_TOKEN]"
+                       Type="string" />
+        <RegistryValue Name="ControlPolicyHmacKey"
+                       Value="[CONTROL_POLICY_HMAC_KEY]"
+                       Type="string" />
+        <RegistryValue Name="ControlServerCertificateSpkiSha256"
+                       Value="[CONTROL_SERVER_CERTIFICATE_SPKI_SHA256]"
+                       Type="string" />
+      </RegistryKey>
+    </Component>
+
+    <Component Id="ProtectedDataDirectoryComponent" Directory="DATAFOLDER" Guid="*">
+      <CreateFolder>
+        <PermissionEx Sddl="D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+      </CreateFolder>
+      <RegistryValue Root="HKLM"
+                     Key="Software\SF\EndpointAIProxy"
+                     Name="DataDirectoryInstalled"
+                     Value="1"
+                     Type="integer"
+                     KeyPath="yes" />
+    </Component>
+
+    <CustomAction Id="DetachManagedConfigurations"
+                  FileRef="ProxyServiceExecutable"
+                  ExeCommand="--maintenance=detach-all --auto-attach=false"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="DetachManagedConfigurations"
+              After="StopServices"
+              Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+    <Feature Id="Complete" Title="顺丰终端 AI 请求代理" Level="1">
+      <ComponentRef Id="ProxyServiceComponent" />
+      <ComponentRef Id="ProtectedDataDirectoryComponent" />
+      <ComponentRef Id="DiagnosticCommandComponent" />
+      <ComponentRef Id="UninstallCommandComponent" />
+      <ComponentRef Id="DiagnosticOutputDirectoryComponent" />
+    </Feature>
+  </Package>
+</Wix>

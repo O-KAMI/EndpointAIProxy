@@ -1,0 +1,10 @@
+#!/bin/zsh
+set -euo pipefail
+
+if [[ "$EUID" -ne 0 ]]; then
+  echo "Run with sudo: sudo sf-endpointai-diagnostics" >&2
+  exit 5
+fi
+
+exec "/Library/Application Support/SF/EndpointAIProxy/bin/Sf.EndpointAI.Client.Service" \
+  --maintenance=collect-diagnostics --auto-attach=false "$@"

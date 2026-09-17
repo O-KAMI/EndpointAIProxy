@@ -1,0 +1,17 @@
+bin/
+obj/
+.vs/
+.idea/
+.vscode/
+TestResults/
+artifacts/
+logs/
+*.user
+*.suo
+*.nupkg
+*.snupkg
+*.log
+*.db-shm
+*.db-wal
+*.pfx
+*.private.json

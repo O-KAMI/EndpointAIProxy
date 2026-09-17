@@ -1,0 +1,17 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+  <PropertyGroup>
+    <OutputName>Sf.EndpointAI.Proxy.Setup</OutputName>
+    <OutputType>Package</OutputType>
+    <Platform>x64</Platform>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
+    <ServicePublishDir Condition="'$(ServicePublishDir)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\publish\service</ServicePublishDir>
+    <ControlServerOrigin Condition="'$(ControlServerOrigin)' == ''">https://127.0.0.1:18443</ControlServerOrigin>
+    <ControlEnrollmentToken Condition="'$(ControlEnrollmentToken)' == ''">BUILD_VALUE_REQUIRED</ControlEnrollmentToken>
+    <ControlPolicyHmacKey Condition="'$(ControlPolicyHmacKey)' == ''">BUILD_VALUE_REQUIRED</ControlPolicyHmacKey>
+    <ControlServerCertificateSpkiSha256 Condition="'$(ControlServerCertificateSpkiSha256)' == ''">BUILD_VALUE_REQUIRED</ControlServerCertificateSpkiSha256>
+    <DefineConstants>ProductVersion=$(ProductVersion);ServicePublishDir=$(ServicePublishDir);ControlServerOrigin=$(ControlServerOrigin);ControlEnrollmentToken=$(ControlEnrollmentToken);ControlPolicyHmacKey=$(ControlPolicyHmacKey);ControlServerCertificateSpkiSha256=$(ControlServerCertificateSpkiSha256)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" />
+  </ItemGroup>
+</Project>
