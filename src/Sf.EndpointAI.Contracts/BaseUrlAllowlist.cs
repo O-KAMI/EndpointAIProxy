@@ -2,7 +2,7 @@ namespace Sf.EndpointAI.Contracts;
 
 public static class BaseUrlAllowlist
 {
-    public const string LegacyCcrBaseUrl = "https://ccr.example.invalid";
+    public const string LegacyCcrBaseUrl = "https://internal.example.invalid/ccr";
     public const int MaximumEntries = 256;
     public const int MaximumEntryLength = 2048;
 

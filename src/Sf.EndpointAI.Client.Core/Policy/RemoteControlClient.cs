@@ -12,7 +12,9 @@ public sealed record RemoteControlOptions(
     Uri ServerOrigin,
     string? ClientToken,
     byte[] PolicyHmacKey,
-    string ServerCertificateSpkiSha256);
+    string ServerCertificateSpkiSha256,
+    byte[]? TransportKey = null,
+    string TransportKeyId = "production-2026-01");
 
 public sealed record ReceivedPolicy(EndpointPolicy Policy, string Signature, byte[] RawBody);
 
@@ -39,7 +41,7 @@ public sealed class RemoteControlClient(HttpClient httpClient, RemoteControlOpti
         CancellationToken cancellationToken)
     {
         using var request = CreateRequest(HttpMethod.Get, path, bearerToken);
-        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength is > MaximumPolicyBytes)
         {
@@ -75,7 +77,7 @@ public sealed class RemoteControlClient(HttpClient httpClient, RemoteControlOpti
         CancellationToken cancellationToken = default)
     {
         using var request = CreateJsonRequest(HttpMethod.Post, "/api/v1/heartbeat", heartbeat);
-        using var response = await httpClient.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<HeartbeatResponse>(JsonOptions, cancellationToken)
             ?? throw new InvalidOperationException("The heartbeat response is empty.");
@@ -86,7 +88,7 @@ public sealed class RemoteControlClient(HttpClient httpClient, RemoteControlOpti
         CancellationToken cancellationToken = default)
     {
         using var request = CreateJsonRequest(HttpMethod.Post, "/api/v2/enroll", enrollment);
-        using var response = await httpClient.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<DeviceEnrollmentResponse>(JsonOptions, cancellationToken)
             ?? throw new InvalidOperationException("The device enrollment response is empty.");
@@ -98,7 +100,7 @@ public sealed class RemoteControlClient(HttpClient httpClient, RemoteControlOpti
         CancellationToken cancellationToken = default)
     {
         using var request = CreateJsonRequest(HttpMethod.Post, "/api/v2/heartbeat", heartbeat, deviceToken);
-        using var response = await httpClient.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         var value = await response.Content.ReadFromJsonAsync<HeartbeatV2Response>(JsonOptions, cancellationToken)
             ?? throw new InvalidOperationException("The v2 heartbeat response is empty.");
@@ -120,7 +122,7 @@ public sealed class RemoteControlClient(HttpClient httpClient, RemoteControlOpti
             $"/api/v2/commands/{update.CommandId:D}/status",
             update,
             deviceToken);
-        using var response = await httpClient.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
     }
 
@@ -129,7 +131,7 @@ public sealed class RemoteControlClient(HttpClient httpClient, RemoteControlOpti
         CancellationToken cancellationToken = default)
     {
         using var request = CreateJsonRequest(HttpMethod.Post, "/api/v1/events/batch", batch);
-        using var response = await httpClient.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<EventBatchResponse>(JsonOptions, cancellationToken)
             ?? throw new InvalidOperationException("The event response is empty.");
@@ -141,7 +143,7 @@ public sealed class RemoteControlClient(HttpClient httpClient, RemoteControlOpti
         CancellationToken cancellationToken = default)
     {
         using var request = CreateJsonRequest(HttpMethod.Post, "/api/v2/events/batch", batch, deviceToken);
-        using var response = await httpClient.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<EventBatchResponse>(JsonOptions, cancellationToken)
             ?? throw new InvalidOperationException("The device event response is empty.");
@@ -151,7 +153,7 @@ public sealed class RemoteControlClient(HttpClient httpClient, RemoteControlOpti
     {
         ArgumentNullException.ThrowIfNull(value);
         if (!value.ServerOrigin.IsAbsoluteUri
-            || !string.Equals(value.ServerOrigin.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(value.ServerOrigin.Scheme, value.TransportKey is null ? Uri.UriSchemeHttps : Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
             || value.ServerOrigin.AbsolutePath != "/"
             || !string.IsNullOrEmpty(value.ServerOrigin.Query)
             || !string.IsNullOrEmpty(value.ServerOrigin.Fragment)
@@ -165,12 +167,23 @@ public sealed class RemoteControlClient(HttpClient httpClient, RemoteControlOpti
             throw new ArgumentException("A 32-byte HMAC key is required.", nameof(value));
         }
 
-        ControlServerCertificateValidator.ParsePin(value.ServerCertificateSpkiSha256);
+        if (value.TransportKey is null)
+            ControlServerCertificateValidator.ParsePin(value.ServerCertificateSpkiSha256);
+        else if (value.TransportKey.Length != 32 || !System.Text.RegularExpressions.Regex.IsMatch(value.TransportKeyId, @"\A[A-Za-z0-9_-]{1,64}\z"))
+            throw new ArgumentException("A 32-byte transport key and valid key ID are required.", nameof(value));
 
         return value;
     }
 
     private HttpRequestMessage CreateRequest(HttpMethod method, string path, string? bearerToken = null)
+        => CreateAuthenticatedRequest(method, path, bearerToken);
+
+    private Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        => options.TransportKey is null
+            ? httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            : AesControlTransport.SendAsync(httpClient, options, request, cancellationToken);
+
+    private HttpRequestMessage CreateAuthenticatedRequest(HttpMethod method, string path, string? bearerToken = null)
     {
         var validated = ValidateOptions(options);
         var request = new HttpRequestMessage(method, new Uri(validated.ServerOrigin, path));

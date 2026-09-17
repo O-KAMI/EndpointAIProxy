@@ -27,7 +27,7 @@ public sealed class AgentConfigAttachmentCoordinator
 {
     private static readonly string[] SupportedAppTypes = ["claude", "codex"];
     private static readonly Uri InspectionUri = new("http://127.0.0.1:18080/r/config-inspection");
-    private static readonly Uri PrototypeDirectGatewayUri = new("http://gateway.example.invalid");
+    private static readonly Uri PrototypeDirectGatewayUri = new("http://192.0.2.2:8080");
     private readonly IRouteRegistry _routeRegistry;
     private readonly RouteProvisioner _routeProvisioner;
     private readonly BaseUrlBypassPolicy _bypassPolicy;

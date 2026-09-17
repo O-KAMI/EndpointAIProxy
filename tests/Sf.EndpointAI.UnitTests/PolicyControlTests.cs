@@ -54,11 +54,11 @@ public sealed class PolicyControlTests : IAsyncLifetime
     [Fact]
     public void Signature_verification_covers_allowlisted_base_urls()
     {
-        var policy = CreatePolicy(2) with { AllowlistedBaseUrls = ["https://model-one.internal/v1"] };
+        var policy = CreatePolicy(2) with { AllowlistedBaseUrls = ["https://model-one.example.invalid/v1"] };
         var body = JsonSerializer.SerializeToUtf8Bytes(policy, JsonOptions);
         var signature = PolicySignatureVerifier.Sign(body, HmacKey);
         var tampered = Encoding.UTF8.GetBytes(
-            Encoding.UTF8.GetString(body).Replace("model-one.internal", "model-two.internal", StringComparison.Ordinal));
+            Encoding.UTF8.GetString(body).Replace("model-one.example.invalid", "model-two.internal", StringComparison.Ordinal));
 
         var exception = Assert.Throws<PolicySignatureException>(() =>
             PolicySignatureVerifier.Verify(tampered, signature, HmacKey));
@@ -84,7 +84,7 @@ public sealed class PolicyControlTests : IAsyncLifetime
         var policy = CreatePolicy(1) with
         {
             RouteMode = RouteMode.FixedGateway,
-            GatewayOrigin = "http://10.0.0.8:8080",
+            GatewayOrigin = "http://192.0.2.8:8080",
         };
 
         var exception = Assert.Throws<PolicyValidationException>(() => PolicyValidator.Validate(policy));
@@ -93,9 +93,9 @@ public sealed class PolicyControlTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData("ftp://model.internal/v1")]
-    [InlineData("https://model.internal/v1?target=external")]
-    [InlineData("https://user@model.internal/v1")]
+    [InlineData("ftp://model.example.invalid/v1")]
+    [InlineData("https://model.example.invalid/v1?target=external")]
+    [InlineData("https://user@model.example.invalid/v1")]
     public void Policy_rejects_invalid_allowlisted_base_urls(string value)
     {
         var exception = Assert.Throws<PolicyValidationException>(() =>

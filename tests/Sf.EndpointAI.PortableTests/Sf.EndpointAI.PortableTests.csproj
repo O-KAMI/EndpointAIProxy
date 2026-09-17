@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <ProjectReference Include="../../src/Sf.EndpointAI.Client.Core/Sf.EndpointAI.Client.Core.csproj" />
+    <Compile Include="../Sf.EndpointAI.UnitTests/RouteTargetResolverTests.cs" Link="RouteTargetResolverTests.cs" />
+    <Compile Include="../Sf.EndpointAI.UnitTests/PolicyControlTests.cs" Link="PolicyControlTests.cs" />
+    <Compile Include="../Sf.EndpointAI.UnitTests/MacPlatformTests.cs" Link="MacPlatformTests.cs" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+</Project>

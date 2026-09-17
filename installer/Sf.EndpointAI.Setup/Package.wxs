@@ -7,23 +7,11 @@
            Scope="perMachine"
            Codepage="936"
            InstallerVersion="500">
-    <Property Id="CONTROL_SERVER_ORIGIN" Value="$(var.ControlServerOrigin)" Secure="yes" />
-    <Property Id="CONTROL_ENROLLMENT_TOKEN" Value="$(var.ControlEnrollmentToken)" Secure="yes" Hidden="yes" />
-    <Property Id="CONTROL_POLICY_HMAC_KEY" Value="$(var.ControlPolicyHmacKey)" Secure="yes" Hidden="yes" />
-    <Property Id="CONTROL_SERVER_CERTIFICATE_SPKI_SHA256"
-              Value="$(var.ControlServerCertificateSpkiSha256)"
-              Secure="yes"
-              Hidden="yes" />
-    <MajorUpgrade DowngradeErrorMessage="已安装更高版本的顺丰终端 AI 请求代理。" />
+    <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更高版本的顺丰终端 AI 请求代理。" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="low" />
-    <util:CloseApplication Id="CloseLegacyTrayApplication"
-                           Target="Sf.EndpointAI.Client.Tray.exe"
-                           CloseMessage="yes"
-                           ElevatedCloseMessage="yes"
-                           ElevatedEndSessionMessage="yes"
-                           Timeout="5"
-                           TerminateProcess="0"
-                           RebootPrompt="no" />
+    <Property Id="MSIDISABLERMRESTART" Value="1" />
+    <Property Id="MsiLogging" Value="voicewarmup!" />
+    <Property Id="EndpointAIDLPLogMarker" Value="EndpointAIDLP-Windows-0.1.22" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="SfProgramDirectory" Name="SF">
@@ -96,18 +84,6 @@
         <RegistryValue Name="DisplayVersion"
                        Value="[ProductVersion]"
                        Type="string" />
-        <RegistryValue Name="ControlServerOrigin"
-                       Value="[CONTROL_SERVER_ORIGIN]"
-                       Type="string" />
-        <RegistryValue Name="ControlEnrollmentToken"
-                       Value="[CONTROL_ENROLLMENT_TOKEN]"
-                       Type="string" />
-        <RegistryValue Name="ControlPolicyHmacKey"
-                       Value="[CONTROL_POLICY_HMAC_KEY]"
-                       Type="string" />
-        <RegistryValue Name="ControlServerCertificateSpkiSha256"
-                       Value="[CONTROL_SERVER_CERTIFICATE_SPKI_SHA256]"
-                       Type="string" />
       </RegistryKey>
     </Component>
 
@@ -123,6 +99,34 @@
                      KeyPath="yes" />
     </Component>
 
+    <Component Id="ProductionCredentialsComponent" Directory="DATAFOLDER" Guid="*">
+      <File Id="ProductionCredentials" Source="$(var.ProductionInputDir)\client-credentials.json" Name="client-credentials.json" KeyPath="yes" />
+    </Component>
+    <Component Id="ProductionProvisionScriptComponent" Directory="DATAFOLDER" Guid="*">
+      <File Id="ProductionProvisionScript" Source="$(var.ProductionInputDir)\Set-ProductionClientControl.ps1" Name="Set-ProductionClientControl.ps1" KeyPath="yes" />
+    </Component>
+    <Binary Id="InstallerActionsBinary" SourceFile="$(var.InstallerActionsDir)\Sf.EndpointAI.InstallerActions.exe" />
+    <CustomAction Id="PreflightLegacy" BinaryRef="InstallerActionsBinary"
+      ExeCommand="--mode preflight --install-dir &quot;[INSTALLFOLDER].&quot; --data-dir &quot;[DATAFOLDER].&quot; --transaction &quot;[ProductCode]&quot;"
+      Execute="immediate" Return="check" HideTarget="yes" />
+    <CustomAction Id="SnapshotConfiguration" BinaryRef="InstallerActionsBinary"
+      ExeCommand="--mode snapshot --install-dir &quot;[INSTALLFOLDER].&quot; --data-dir &quot;[DATAFOLDER].&quot; --transaction &quot;[ProductCode]&quot;"
+      Execute="immediate" Return="check" HideTarget="yes" />
+    <CustomAction Id="RollbackConfiguration" BinaryRef="InstallerActionsBinary"
+      ExeCommand="--mode rollback --install-dir &quot;[INSTALLFOLDER].&quot; --data-dir &quot;[DATAFOLDER].&quot; --transaction &quot;[ProductCode]&quot;"
+      Execute="rollback" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="QuiesceLegacy" BinaryRef="InstallerActionsBinary"
+      ExeCommand="--mode quiesce --install-dir &quot;[INSTALLFOLDER].&quot; --data-dir &quot;[DATAFOLDER].&quot; --transaction &quot;[ProductCode]&quot;"
+      Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="ProvisionProductionControl" BinaryRef="InstallerActionsBinary"
+      ExeCommand="--mode apply --install-dir &quot;[INSTALLFOLDER].&quot; --data-dir &quot;[DATAFOLDER].&quot; --transaction &quot;[ProductCode]&quot;"
+      Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="VerifyInstalledService" BinaryRef="InstallerActionsBinary"
+      ExeCommand="--mode verify --install-dir &quot;[INSTALLFOLDER].&quot; --data-dir &quot;[DATAFOLDER].&quot; --transaction &quot;[ProductCode]&quot;"
+      Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="CommitConfiguration" BinaryRef="InstallerActionsBinary"
+      ExeCommand="--mode commit --install-dir &quot;[INSTALLFOLDER].&quot; --data-dir &quot;[DATAFOLDER].&quot; --transaction &quot;[ProductCode]&quot;"
+      Execute="commit" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="DetachManagedConfigurations"
                   FileRef="ProxyServiceExecutable"
                   ExeCommand="--maintenance=detach-all --auto-attach=false"
@@ -131,6 +135,13 @@
                   Return="check" />
 
     <InstallExecuteSequence>
+      <Custom Action="PreflightLegacy" Before="InstallValidate" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="SnapshotConfiguration" After="InstallValidate" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="RollbackConfiguration" Before="QuiesceLegacy" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="QuiesceLegacy" Before="RemoveExistingProducts" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="ProvisionProductionControl" After="InstallServices" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="VerifyInstalledService" After="StartServices" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="CommitConfiguration" After="VerifyInstalledService" Condition="NOT REMOVE~=&quot;ALL&quot;" />
       <Custom Action="DetachManagedConfigurations"
               After="StopServices"
               Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
@@ -138,6 +149,8 @@
 
     <Feature Id="Complete" Title="顺丰终端 AI 请求代理" Level="1">
       <ComponentRef Id="ProxyServiceComponent" />
+      <ComponentRef Id="ProductionCredentialsComponent" />
+      <ComponentRef Id="ProductionProvisionScriptComponent" />
       <ComponentRef Id="ProtectedDataDirectoryComponent" />
       <ComponentRef Id="DiagnosticCommandComponent" />
       <ComponentRef Id="UninstallCommandComponent" />

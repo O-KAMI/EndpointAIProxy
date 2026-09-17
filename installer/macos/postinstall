@@ -1,25 +1,40 @@
 #!/bin/zsh
-set -eu
-
-DATA_ROOT="/Library/Application Support/SF/EndpointAIProxy"
-CONFIG_FILE="/etc/sf-endpointai-proxy.conf"
-CONFIG_TEMPLATE="/usr/local/share/sf-endpointai-proxy/sf-endpointai-proxy.conf.example"
-PLIST="/Library/LaunchDaemons/com.sf.endpointai.proxy.plist"
-
-/bin/mkdir -p "$DATA_ROOT/state" "$DATA_ROOT/captures" "$DATA_ROOT/logs/service" \
-  "$DATA_ROOT/config-backups" "$DATA_ROOT/.net"
-/usr/sbin/chown -R root:wheel "$DATA_ROOT"
-/bin/chmod 0750 "$DATA_ROOT" "$DATA_ROOT/state" "$DATA_ROOT/captures" \
-  "$DATA_ROOT/logs" "$DATA_ROOT/logs/service" "$DATA_ROOT/config-backups" "$DATA_ROOT/.net"
-
-if [[ ! -e "$CONFIG_FILE" ]]; then
-  /usr/bin/install -o root -g wheel -m 0600 "$CONFIG_TEMPLATE" "$CONFIG_FILE"
+set -euo pipefail
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/InstallerSupport.sh"
+trap 'sf_failed_exit $?' EXIT
+trap 'exit 1' HUP INT TERM
+main() {
+  [[ $EUID -eq 0 ]] || return 1
+  sf_step sf_load_session || return 1
+  SF_OWN_LOCK=1
+  SF_BACKUP_READY=1
+  SF_STOP_ATTEMPTED=1
+  print -r -- "$$" > "$SF_LOCK/script-pid" || return 1
+  SF_STAGE=postinstall
+  sf_log begin || return 1
+  sf_step sf_validate_credentials "$SCRIPT_DIR/client-credentials.json" || return 1
+  local dir
+  for dir in "$SF_DATA/state" "$SF_DATA/captures" "$SF_DATA/logs/service" \
+    "$SF_DATA/config-backups" "$SF_DATA/.net"; do
+    sf_step sf_safe_path "$dir" || return 1
+    sf_step /bin/mkdir -p "$dir" || return 1
+    sf_step /usr/sbin/chown root:wheel "$dir" || return 1
+    sf_step /bin/chmod 0750 "$dir" || return 1
+  done
+  /usr/sbin/chown root:wheel "$SF_DATA" "$SF_DATA/logs" "$SF_PLIST" || return 1
+  /bin/chmod 0750 "$SF_DATA" "$SF_DATA/logs" || return 1
+  /bin/chmod 0644 "$SF_PLIST" || return 1
+  sf_step sf_write_config || return 1
+  sf_step sf_start || return 1
+  sf_step sf_ready || return 1
+  SF_STAGE=complete
+  sf_log success || return 1
+  sf_clear_session || return 1
+}
+if ! main; then
+  trap - EXIT
+  sf_failed_exit 1
+  exit 1
 fi
-
-/usr/sbin/chown root:wheel "$PLIST"
-/bin/chmod 0644 "$PLIST"
-/usr/bin/plutil -lint "$PLIST"
-/bin/launchctl bootstrap system "$PLIST"
-/bin/launchctl enable system/com.sf.endpointai.proxy
-/bin/launchctl kickstart -k system/com.sf.endpointai.proxy
 exit 0

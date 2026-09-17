@@ -15,3 +15,16 @@ logs/
 *.db-wal
 *.pfx
 *.private.json
+private/
+InstallerLogs/
+InstallerRollback/
+client-credentials.json
+launch-env.json
+*.pkg
+*.msi
+*.p12
+*.key
+*.pem
+*.zip
+__pycache__/
+*.pyc

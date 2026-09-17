@@ -37,7 +37,7 @@ public sealed class ControlStoreTests : IAsyncLifetime
             current.PolicyVersion,
             true,
             RouteMode.FixedGateway,
-            "http://10.0.0.8:8080",
+            "http://192.0.2.8:8080",
             true,
             30,
             45);
@@ -172,7 +172,7 @@ public sealed class ControlStoreTests : IAsyncLifetime
                 1,
                 0)]);
 
-        await Store.RecordHeartbeatV2Async(heartbeat, "10.0.0.1", 60, TestContext.Current.CancellationToken);
+        await Store.RecordHeartbeatV2Async(heartbeat, "192.0.2.1", 60, TestContext.Current.CancellationToken);
         var details = await Store.GetDeviceDetailsAsync(deviceId, TestContext.Current.CancellationToken);
 
         Assert.NotNull(details);
@@ -201,7 +201,7 @@ public sealed class ControlStoreTests : IAsyncLifetime
         };
         await Store.RecordHeartbeatV2Async(
             restartedHeartbeat,
-            "10.0.0.1",
+            "192.0.2.1",
             60,
             TestContext.Current.CancellationToken);
         var afterRestart = await Store.GetDeviceDetailsAsync(deviceId, TestContext.Current.CancellationToken);
@@ -287,7 +287,7 @@ public sealed class ControlStoreTests : IAsyncLifetime
             endpoints,
             []);
 
-        await Store.RecordHeartbeatV2Async(heartbeat, "10.0.0.1", 60, TestContext.Current.CancellationToken);
+        await Store.RecordHeartbeatV2Async(heartbeat, "192.0.2.1", 60, TestContext.Current.CancellationToken);
         var summary = Assert.Single(await Store.ListDevicesAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(1, summary.AgentCount);

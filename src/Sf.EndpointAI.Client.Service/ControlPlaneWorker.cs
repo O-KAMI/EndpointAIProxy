@@ -88,7 +88,8 @@ public sealed class ControlPlaneWorker(
                 or UnauthorizedAccessException
                 or CryptographicException
                 or SqliteException
-                or JsonException)
+                or JsonException
+                or OperationCanceledException)
             {
                 var code = GetErrorCode(exception);
                 controlPlaneRuntimeState.RecordFailure(code);

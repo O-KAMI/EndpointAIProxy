@@ -1,0 +1,135 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:firewall="http://wixtoolset.org/schemas/v4/wxs/firewall">
+  <Package Name="顺丰终端 AI 控制服务"
+           Manufacturer="SF"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="78E105A8-166A-4F4D-A67F-64A22D62C99A"
+           Scope="perMachine"
+           Codepage="936"
+           InstallerVersion="500">
+    <Property Id="CONTROL_ENROLLMENT_TOKEN" Value="$(var.EnrollmentToken)" Secure="yes" Hidden="yes" />
+    <Property Id="CONTROL_ADMIN_TOKEN" Value="$(var.AdminToken)" Secure="yes" Hidden="yes" />
+    <Property Id="CONTROL_POLICY_HMAC_KEY" Value="$(var.PolicyHmacKey)" Secure="yes" Hidden="yes" />
+    <Property Id="CONTROL_PFX_PASSWORD" Value="$(var.PfxPassword)" Secure="yes" Hidden="yes" />
+    <MajorUpgrade DowngradeErrorMessage="已安装更高版本的顺丰终端 AI 控制服务。" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="low" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="SfProgramDirectory" Name="SF">
+        <Directory Id="INSTALLFOLDER" Name="Endpoint AI Control Server" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="SfDataDirectory" Name="SF">
+        <Directory Id="DATAFOLDER" Name="EndpointAIControl">
+          <Directory Id="CERTIFICATEFOLDER" Name="certificates" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <Component Id="ControlServiceComponent" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="ControlServiceExecutable"
+            Source="$(var.ControlPublishDir)\Sf.EndpointAI.ControlServer.exe"
+            KeyPath="yes" />
+      <ServiceInstall Id="ControlServiceInstall"
+                      Name="SfEndpointAIControl"
+                      DisplayName="顺丰终端 AI 控制服务"
+                      Description="接收终端AI Agent资产、心跳和代理状态，并下发受签名保护的启用或停用命令。"
+                      Type="ownProcess"
+                      Account="LocalSystem"
+                      Start="auto"
+                      ErrorControl="normal"
+                      Vital="yes" />
+      <ServiceControl Id="ControlServiceControl"
+                      Name="SfEndpointAIControl"
+                      Start="install"
+                      Stop="both"
+                      Remove="uninstall"
+                      Wait="yes" />
+    </Component>
+
+    <Component Id="PublicCertificateComponent" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="PublicCertificateFile"
+            Source="$(var.PublicCertificateDir)\EndpointAI-ControlServer-192.0.2.163.cer"
+            KeyPath="yes" />
+    </Component>
+    <Component Id="InstallConsoleCertificateCommandComponent" Directory="INSTALLFOLDER" Guid="*">
+      <File Source="$(var.PublicCertificateDir)\Install-ControlConsole-Certificate.cmd" KeyPath="yes" />
+    </Component>
+    <Component Id="RemoveConsoleCertificateCommandComponent" Directory="INSTALLFOLDER" Guid="*">
+      <File Source="$(var.PublicCertificateDir)\Remove-ControlConsole-Certificate.cmd" KeyPath="yes" />
+    </Component>
+
+    <Component Id="PrivateCertificateComponent" Directory="CERTIFICATEFOLDER" Guid="*">
+      <CreateFolder>
+        <PermissionEx Sddl="D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+      </CreateFolder>
+      <File Id="PrivateCertificateFile"
+            Source="$(var.PrivateCertificateDir)\control-server.pfx"
+            KeyPath="yes" />
+    </Component>
+
+    <Component Id="ControlConfigurationComponent" Directory="DATAFOLDER" Guid="*">
+      <CreateFolder>
+        <PermissionEx Sddl="D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+      </CreateFolder>
+      <RegistryKey Root="HKLM"
+                   Key="Software\SF\EndpointAIControl"
+                   ForceCreateOnInstall="yes">
+        <PermissionEx Sddl="D:P(A;;KA;;;SY)(A;;KA;;;BA)" />
+        <RegistryValue Name="DisplayVersion" Value="[ProductVersion]" Type="string" KeyPath="yes" />
+        <RegistryValue Name="EnrollmentToken" Value="[CONTROL_ENROLLMENT_TOKEN]" Type="string" />
+        <RegistryValue Name="AdminToken" Value="[CONTROL_ADMIN_TOKEN]" Type="string" />
+        <RegistryValue Name="PolicyHmacKey" Value="[CONTROL_POLICY_HMAC_KEY]" Type="string" />
+        <RegistryValue Name="CertificatePath" Value="[CERTIFICATEFOLDER]control-server.pfx" Type="string" />
+        <RegistryValue Name="CertificatePassword" Value="[CONTROL_PFX_PASSWORD]" Type="string" />
+        <RegistryValue Name="DataRoot" Value="[DATAFOLDER]" Type="string" />
+        <RegistryValue Name="HttpsPort" Value="18443" Type="string" />
+        <RegistryValue Name="RouteMode" Value="FixedGateway" Type="string" />
+        <RegistryValue Name="GatewayOrigin" Value="http://gateway.example.invalid" Type="string" />
+        <RegistryValue Name="AllowInsecureGateway" Value="true" Type="string" />
+      </RegistryKey>
+      <firewall:FirewallException Id="ControlHttpsFirewallRule"
+                                  Name="SF Endpoint AI Control HTTPS (TCP 18443)"
+                                  Description="允许终端代理访问顺丰EndpointAIDLP控制服务。"
+                                  Port="18443"
+                                  Protocol="tcp"
+                                  Profile="all"
+                                  Scope="any"
+                                  Enabled="yes"
+                                  IgnoreFailure="no" />
+    </Component>
+
+    <CustomAction Id="ConfigureControlDelayedStart"
+                  Directory="System64Folder"
+                  ExeCommand="sc.exe config SfEndpointAIControl start= delayed-auto"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <CustomAction Id="ConfigureControlRecovery"
+                  Directory="System64Folder"
+                  ExeCommand="sc.exe failure SfEndpointAIControl reset= 86400 actions= restart/5000/restart/15000/restart/60000"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="ConfigureControlDelayedStart"
+              After="InstallServices"
+              Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="ConfigureControlRecovery"
+              After="ConfigureControlDelayedStart"
+              Condition="NOT REMOVE~=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+
+    <Feature Id="Complete" Title="顺丰终端 AI 控制服务" Level="1">
+      <ComponentRef Id="ControlServiceComponent" />
+      <ComponentRef Id="PublicCertificateComponent" />
+      <ComponentRef Id="InstallConsoleCertificateCommandComponent" />
+      <ComponentRef Id="RemoveConsoleCertificateCommandComponent" />
+      <ComponentRef Id="PrivateCertificateComponent" />
+      <ComponentRef Id="ControlConfigurationComponent" />
+    </Feature>
+  </Package>
+</Wix>

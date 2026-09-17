@@ -14,6 +14,7 @@ fi
 /bin/launchctl bootout system/com.sf.endpointai.proxy >/dev/null 2>&1 || true
 /bin/rm -f "/Library/LaunchDaemons/com.sf.endpointai.proxy.plist"
 /bin/rm -f "/usr/local/sbin/sf-endpointai-diagnostics"
+/bin/rm -f "/usr/local/sbin/sf-endpointai-installer-logs" "/usr/local/sbin/sf-endpointai-installer-recover"
 /bin/rm -rf "/usr/local/share/sf-endpointai-proxy"
 
 echo "Service files removed. Data and /etc/sf-endpointai-proxy.conf were retained."

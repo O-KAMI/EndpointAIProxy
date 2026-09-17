@@ -1,0 +1,19 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+  <PropertyGroup>
+    <OutputName>Sf.EndpointAI.ControlServer.Setup</OutputName>
+    <OutputType>Package</OutputType>
+    <Platform>x64</Platform>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.13</ProductVersion>
+    <ControlPublishDir Condition="'$(ControlPublishDir)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\publish\control-server</ControlPublishDir>
+    <PrivateCertificateDir Condition="'$(PrivateCertificateDir)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\private\control-server</PrivateCertificateDir>
+    <PublicCertificateDir Condition="'$(PublicCertificateDir)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\package</PublicCertificateDir>
+    <EnrollmentToken Condition="'$(EnrollmentToken)' == ''">BUILD_VALUE_REQUIRED</EnrollmentToken>
+    <AdminToken Condition="'$(AdminToken)' == ''">BUILD_VALUE_REQUIRED</AdminToken>
+    <PolicyHmacKey Condition="'$(PolicyHmacKey)' == ''">BUILD_VALUE_REQUIRED</PolicyHmacKey>
+    <PfxPassword Condition="'$(PfxPassword)' == ''">BUILD_VALUE_REQUIRED</PfxPassword>
+    <DefineConstants>ProductVersion=$(ProductVersion);ControlPublishDir=$(ControlPublishDir);PrivateCertificateDir=$(PrivateCertificateDir);PublicCertificateDir=$(PublicCertificateDir);EnrollmentToken=$(EnrollmentToken);AdminToken=$(AdminToken);PolicyHmacKey=$(PolicyHmacKey);PfxPassword=$(PfxPassword)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Firewall.wixext" />
+  </ItemGroup>
+</Project>

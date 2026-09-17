@@ -1,5 +1,23 @@
 #!/bin/zsh
-set -eu
-
-/bin/launchctl bootout system/com.sf.endpointai.proxy >/dev/null 2>&1 || true
+set -euo pipefail
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/InstallerSupport.sh"
+trap 'sf_failed_exit $?' EXIT
+trap 'exit 1' HUP INT TERM
+main() {
+  sf_step sf_open_log || return 1
+  sf_step sf_preflight "$SCRIPT_DIR" "${3:-}" || return 1
+  sf_step sf_acquire || return 1
+  sf_step sf_snapshot || return 1
+  SF_STOP_ATTEMPTED=1
+  sf_step sf_stop || return 1
+  SF_STAGE=payload
+  sf_log prepared || return 1
+}
+if ! main "$@"; then
+  trap - EXIT
+  sf_failed_exit 1
+  exit 1
+fi
+# Lock and snapshot survive while Installer copies the payload.
 exit 0

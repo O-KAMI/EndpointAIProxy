@@ -9,6 +9,7 @@ if [[ -r "$CONFIG_FILE" ]]; then
 fi
 
 export SF_PROXY_DATA_ROOT="${SF_PROXY_DATA_ROOT:-/Library/Application Support/SF/EndpointAIProxy}"
+export SF_PROXY_CONTROL_ORIGIN="${SF_PROXY_CONTROL_ORIGIN:-http://control.example.invalid:8080}"
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${DOTNET_BUNDLE_EXTRACT_BASE_DIR:-$SF_PROXY_DATA_ROOT/.net}"
 
 exec "/Library/Application Support/SF/EndpointAIProxy/bin/Sf.EndpointAI.Client.Service" \
