@@ -394,6 +394,49 @@ public sealed class ControlStoreTests : IAsyncLifetime
         Assert.Equal(deviceId, Assert.Single(await backupStore.ListDevicesAsync(TestContext.Current.CancellationToken)).DeviceId);
     }
 
+    [Fact]
+    public async Task Analytics_snapshot_includes_latest_inventory_and_keeps_each_devices_assets_separate()
+    {
+        var legacy = CreateHeartbeat(Guid.NewGuid(), AgentType.ClaudeCli);
+        var current = CreateHeartbeat(Guid.NewGuid(), AgentType.CodexCli);
+        var now = DateTimeOffset.UtcNow;
+        var endpoint = new AgentEndpointAsset(Guid.NewGuid(), "user", "codex", AgentConfigurationSource.Direct,
+            null, null, true, "gpt-test", AgentWireApi.OpenAiResponses, "https://api.openai.com/v1",
+            "http://127.0.0.1:18080/r/test", "http://127.0.0.1:18080/r/test", false, RouteStatus.Attached, now);
+        var runtime = new DeviceRuntimeState(now.AddMinutes(-5), 300, ClientOperationState.Enabled, true, now, now, "SUCCESS", null);
+        var request = new HeartbeatV2Request(2, current.HeartbeatId, now, current.Device, runtime, current.Policy,
+            current.Proxy, current.Users, current.Agents, [endpoint, endpoint with { AssetId = Guid.NewGuid() }],
+            [new ProxyActivityAsset(endpoint.AssetId, ProxyTrafficState.Succeeded, now, now, null, 200, "SUCCESS", null, 10, 1, 1, 0)]);
+        await Store.RecordHeartbeatAsync(legacy, TestContext.Current.CancellationToken);
+        await Store.RecordHeartbeatV2Async(request, "10.0.0.1", 30, TestContext.Current.CancellationToken);
+        var replacement = CreateHeartbeat(legacy.Device.DeviceId, AgentType.QoderCli);
+        await Store.RecordHeartbeatAsync(replacement, TestContext.Current.CancellationToken);
+
+        var snapshot = await Store.ReadAnalyticsDevicesAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, snapshot.Count);
+        var oldClient = Assert.Single(snapshot, d => d.Device.DeviceId == legacy.Device.DeviceId);
+        Assert.Equal(1, oldClient.Device.SchemaVersion);
+        Assert.Equal(AgentType.QoderCli, Assert.Single(oldClient.Agents).AgentType);
+        Assert.Empty(oldClient.Endpoints);
+        Assert.Empty(oldClient.Activity);
+        Assert.Null(oldClient.Runtime);
+        var modernClient = Assert.Single(snapshot, d => d.Device.DeviceId == current.Device.DeviceId);
+        Assert.Equal(2, modernClient.Device.SchemaVersion);
+        Assert.Equal(30, modernClient.Device.HeartbeatIntervalSeconds);
+        Assert.Equal(ClientOperationState.Enabled, modernClient.Device.OperationState);
+        Assert.Equal(2, modernClient.Endpoints.Count);
+        Assert.Contains(endpoint, modernClient.Endpoints);
+        Assert.Equal(endpoint.AssetId, Assert.Single(modernClient.Activity).AssetId);
+        Assert.Equal(runtime, modernClient.Runtime);
+        var details = await Store.GetDeviceDetailsAsync(current.Device.DeviceId, TestContext.Current.CancellationToken);
+        Assert.NotNull(details);
+        Assert.Equal(details.Device, modernClient.Device);
+        Assert.Equal(details.Agents, modernClient.Agents);
+        Assert.Equal(details.Endpoints.OrderBy(e => e.AssetId), modernClient.Endpoints.OrderBy(e => e.AssetId));
+        Assert.Equal(details.Activity, modernClient.Activity);
+    }
+
     private static EndpointPolicy CreatePolicy()
     {
         return new EndpointPolicy(

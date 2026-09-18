@@ -715,6 +715,55 @@ public sealed class ControlStore(string databasePath, JsonSerializerOptions json
         return new StoredDeviceDetails(device, agents, endpoints, activity, runtime);
     }
 
+    // Read one database snapshot in a bounded number of queries; the dashboard must
+    // not issue a detail request (and a full device scan) for every terminal.
+    public async Task<IReadOnlyList<StoredDeviceDetails>> ReadAnalyticsDevicesAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+        var rows = new List<(HeartbeatRequest Heartbeat, DateTimeOffset Received, int Schema, int Interval, DeviceRuntimeState? Runtime)>();
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = "SELECT h.heartbeat_json,h.received_at_utc,COALESCE(r.schema_version,1),COALESCE(r.heartbeat_interval_seconds,60),r.runtime_json FROM device_heartbeats h LEFT JOIN device_runtime r ON r.device_id=h.device_id ORDER BY h.received_at_utc DESC,h.device_id;";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var heartbeat = JsonSerializer.Deserialize<HeartbeatRequest>(reader.GetString(0), jsonOptions)!;
+                rows.Add((heartbeat, DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture), reader.GetInt32(2), reader.GetInt32(3), reader.IsDBNull(4) ? null : JsonSerializer.Deserialize<DeviceRuntimeState>(reader.GetString(4), jsonOptions)));
+            }
+        }
+        async Task<Dictionary<Guid, List<T>>> ReadAssets<T>(string sql)
+        {
+            var result = new Dictionary<Guid, List<T>>();
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = sql;
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var id = Guid.Parse(reader.GetString(0));
+                if (!result.TryGetValue(id, out var list)) result[id] = list = [];
+                if (JsonSerializer.Deserialize<T>(reader.GetString(1), jsonOptions) is { } asset) list.Add(asset);
+            }
+            return result;
+        }
+        var endpoints = await ReadAssets<AgentEndpointAsset>("SELECT device_id,asset_json FROM agent_endpoint_assets;");
+        var activity = await ReadAssets<ProxyActivityAsset>("SELECT device_id,activity_json FROM proxy_activity;");
+        return rows.Select(row =>
+        {
+            var h = row.Heartbeat;
+            IReadOnlyList<AgentEndpointAsset> assets = endpoints.GetValueOrDefault(h.Device.DeviceId) ?? [];
+            var summary = new StoredDeviceSummary(h.Device.DeviceId, row.Received, h.Device.Hostname, h.Device.OsVersion,
+                h.Agents.Count(a => a.AgentType is not (AgentType.CcSwitch or AgentType.UnknownCandidate)), h.Policy.AppliedVersion ?? 0,
+                h.Proxy.State, h.Device.ServiceVersion, assets.Where(a => a.IsCurrent)
+                    .Select(a => (a.UserSid, a.AgentFamily, a.ConfigurationSource, a.ProviderId, EndpointId: a.EndpointId ?? ""))
+                    .Distinct().Count(), row.Runtime?.OperationState ?? ClientOperationState.Unknown,
+                row.Interval, row.Schema);
+            return new StoredDeviceDetails(summary, h.Agents, assets, activity.GetValueOrDefault(h.Device.DeviceId) ?? [], row.Runtime);
+        }).ToArray();
+    }
+
     public async Task<StoredRemoteCommand?> CreateRemoteCommandAsync(
         Guid deviceId,
         CreateRemoteCommandRequest request,

@@ -399,6 +399,23 @@ app.MapGet("/admin/v1/devices", async (
     }));
 });
 
+app.MapGet("/admin/v1/analytics", async (string? scope, string? os, string? providerMode, ControlStore controlStore, CancellationToken cancellationToken) =>
+{
+    var devices = await controlStore.ReadAnalyticsDevicesAsync(cancellationToken);
+    var policy = await controlStore.GetPolicyAsync(cancellationToken);
+    return Results.Ok(AnalyticsService.Build(devices, policy, DateTimeOffset.UtcNow, new AnalyticsQuery(scope ?? "online", os, providerMode ?? "observed")));
+});
+
+app.MapGet("/admin/v1/analytics/devices", async (string? scope, string? os, string? providerMode, string? kind, string? key,
+    string? search, int? skip, int? take, string? agent, string? provider, string? anomaly, string? allowlist,
+    ControlStore controlStore, CancellationToken cancellationToken) =>
+{
+    var devices = await controlStore.ReadAnalyticsDevicesAsync(cancellationToken);
+    return Results.Ok(AnalyticsService.DrillDown(devices, DateTimeOffset.UtcNow,
+        new AnalyticsQuery(scope ?? "online", os, providerMode ?? "observed"), kind, key, search, skip ?? 0, take ?? 50,
+        agent, provider, anomaly, allowlist));
+});
+
 app.MapGet("/admin/v1/dashboard", async (ControlStore controlStore, CancellationToken cancellationToken) =>
 {
     var now = DateTimeOffset.UtcNow;
@@ -688,18 +705,7 @@ static string GetAdminActor(HttpRequest request)
 }
 
 static DeviceOnlineState CalculateOnlineState(StoredDeviceSummary device, DateTimeOffset now)
-{
-    var elapsed = now - device.LastSeenAtUtc;
-    var interval = TimeSpan.FromSeconds(Math.Clamp(device.HeartbeatIntervalSeconds, 15, 3600));
-    if (elapsed <= interval + interval + TimeSpan.FromSeconds(30))
-    {
-        return DeviceOnlineState.Online;
-    }
-
-    return elapsed <= interval * 5 + TimeSpan.FromSeconds(30)
-        ? DeviceOnlineState.Stale
-        : DeviceOnlineState.Offline;
-}
+    => AnalyticsService.OnlineState(device, now);
 
 static string SignCommand(RemoteCommandPayload payload, byte[] commandKey, JsonSerializerOptions options)
 {
