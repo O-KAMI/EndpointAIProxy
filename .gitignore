@@ -28,3 +28,12 @@ launch-env.json
 *.zip
 __pycache__/
 *.pyc
+.DS_Store
+.venv/
+.pytest_cache/
+server/var/
+server/conf/mysql_sit.properties
+server/conf/mysql_prd.properties
+server/conf/secrets.env
+*.sql.gz
+server/deployment/wheelhouse/

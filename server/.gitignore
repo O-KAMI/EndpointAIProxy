@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+logs/
+var/
+artifacts/
+conf/mysql_sit.properties
+conf/mysql_prd.properties
+conf/secrets.env
+*.key
+*.pfx
+*.sql.gz
+tests/dotnet/bin/
+tests/dotnet/obj/

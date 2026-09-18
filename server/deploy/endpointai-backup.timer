@@ -1,0 +1,10 @@
+[Unit]
+Description=EndpointAIDLP backup every 24 hours
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=24h
+Unit=endpointai-backup.service
+
+[Install]
+WantedBy=timers.target

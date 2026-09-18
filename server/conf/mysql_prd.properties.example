@@ -1,0 +1,5 @@
+eai.mysql.host=YOUR_PRD_MYSQL_HOST
+eai.mysql.port=3306
+eai.mysql.database=endpoint_ai_proxy
+eai.mysql.username=YOUR_PRD_MYSQL_USER
+eai.mysql.password=

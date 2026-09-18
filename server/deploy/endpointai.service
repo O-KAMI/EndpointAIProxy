@@ -1,0 +1,33 @@
+[Unit]
+Description=EndpointAIDLP Python Control Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=endpointai
+Group=endpointai
+WorkingDirectory=/opt/endpointai/current
+Environment=APP_ENV=prd
+Environment=APP_CONFIG=/etc/endpointai/conf
+Environment=SF_CONTROL_HTTP_HOST=0.0.0.0
+Environment=SF_CONTROL_HTTP_PORT=8080
+Environment=SF_CONTROL_DATA_ROOT=/var/lib/endpointai
+Environment=SF_CONTROL_LOG_DIR=/var/log/endpointai
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/endpointai/secrets.env
+ExecStart=/opt/endpointai/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/endpointai /var/log/endpointai
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
