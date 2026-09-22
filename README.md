@@ -8,7 +8,7 @@ Build with the .NET SDK version selected by `global.json`. Windows MSI and macOS
 
 Client installer version: **0.1.22**. macOS packages include protected stage logs, local service readiness checks, upgrade rollback, and standalone diagnostic/recovery tools. See [macOS deployment](docs/README-MACOS-0.1.22.md) and [verification boundaries](docs/MACOS-ACCEPTANCE-0.1.22.md).
 
-The production Python/MySQL control server source is maintained in [`server/`](server/README.md). Its 0.1.22 console provides policy management, asset management, and terminal analytics. The ASP.NET Core/SQLite control server in `src/` remains a separate prototype; choose the matching deployment workflow. See [Python console analytics](server/docs/CONSOLE_ANALYTICS.md) and [Python upgrade procedure](deployment/README-SERVER-UPGRADE-0.1.22.md). Offline wheels and generated release archives are supplied separately.
+The production Python/MySQL control server source is maintained in [`server/`](server/README.md). Its 0.1.23 console provides policy management, asset management, and current terminal analytics. The ASP.NET Core/SQLite control server in `src/` remains a separate prototype; choose the matching deployment workflow. See [Python console analytics](server/docs/CONSOLE_ANALYTICS.md) and [Python upgrade procedure](deployment/README-SERVER-UPGRADE-0.1.23.md). Offline wheels and generated release archives are supplied separately.
 
 For Windows allowlist troubleshooting, run the [one-click diagnostic collector](docs/README-WHITELIST-DIAGNOSTICS.md) with administrator privileges. It combines the client's sanitized diagnostic bundle with read-only cached-policy inspection and live policy-version checks.
 

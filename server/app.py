@@ -95,7 +95,7 @@ def create_app(config=None, store=None, check_database=True):
         return response({"error": {"code": "INTERNAL_ERROR", "message": "An internal error occurred.",
                                    "traceId": g.get("trace_id")}}, 500)
 
-    logger.info("EndpointAIDLP 0.1.22 initialized environment=%s", cfg.APP_ENV)
+    logger.info("EndpointAIDLP 0.1.23 initialized environment=%s", cfg.APP_ENV)
     return app
 
 

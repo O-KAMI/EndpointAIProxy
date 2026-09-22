@@ -48,7 +48,7 @@ def main():
         for path in files:
             name = str(path.relative_to(ROOT))
             if not args.update:
-                name = "EndpointAIDLP-Server-0.1.22/" + name
+                name = "EndpointAIDLP-Server-0.1.23/" + name
             archive.write(path, arcname=name)
             manifest[name] = hashlib.sha256(path.read_bytes()).hexdigest()
         if args.update:

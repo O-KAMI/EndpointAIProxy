@@ -1,6 +1,7 @@
 """Latest reported state analytics, using terminals rather than request counts."""
 from collections import defaultdict
 from datetime import datetime, timezone
+import ipaddress
 from urllib.parse import urlsplit
 from .security import timestamp
 from .validation import normalize_base_url
@@ -39,7 +40,7 @@ def family_name(value):
     return {"claude": "Claude", "codex": "Codex", "qoder": "Qoder"}.get((value or "").lower(), value or "")
 
 
-def provider(target):
+def provider(target, allowlisted=False):
     try:
         uri = urlsplit(target or "")
         if uri.scheme.lower() not in {"http", "https"} or not uri.hostname:
@@ -47,10 +48,17 @@ def provider(target):
         host = uri.hostname.encode("idna").decode("ascii").lower()
     except (ValueError, UnicodeError):
         return "无法识别"
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return "本地代理地址 · " + host
+    except ValueError:
+        pass
+    if allowlisted:
+        return "白名单目标 · " + host
     for domain, name in DOMAINS:
         if host == domain or host.endswith("." + domain):
             return name
-    return "未知/中转 · " + host
+    return "自定义目标 · " + host
 
 
 def allowlist_key(value):
@@ -69,7 +77,7 @@ def unique(values, key):
     return list({v.get(key): v for v in values}.values())
 
 
-def project(detail, now, provider_mode):
+def project(detail, now, policy):
     device = detail["device"]
     agents = detail.get("agents") or []
     endpoints = unique(detail.get("endpoints") or [], "assetId")
@@ -79,42 +87,49 @@ def project(detail, now, provider_mode):
         old = activity.get(a.get("assetId"))
         if old is None or (a.get("lastRequestAtUtc") or "") > (old.get("lastRequestAtUtc") or ""):
             activity[a.get("assetId")] = a
+    allowlisted = {allowlist_key(value) for value in policy.get("allowlistedBaseUrls") or []}
     requests = []
     for e in endpoints:
         a = activity.get(e.get("assetId"), {})
+        request_count = a.get("requestCountSinceBoot") or 0
+        result_scope = "currentRun" if request_count > 0 else "previousRun" if a.get("lastRequestAtUtc") else "neverObserved"
+        is_current = e.get("isCurrent") is True
+        is_bypassed = bypassed(e)
+        current_anomaly = (is_current and not is_bypassed and e.get("routeStatus") == "attached"
+            and result_scope == "currentRun" and a.get("state") in FAILED)
+        target = e.get("originalTargetBaseUrl")
         requests.append(dict(assetId=e.get("assetId"), agentFamily=family_name(e.get("agentFamily")),
-            provider=provider(e.get("originalTargetBaseUrl")), targetBaseUrl=e.get("originalTargetBaseUrl"),
+            provider=provider(target, allowlist_key(target) in allowlisted if target else False), targetBaseUrl=target,
             state=a.get("state", "neverObserved"), lastHttpStatusCode=a.get("lastHttpStatusCode"),
             lastErrorCode=a.get("lastErrorCode"), lastOutcome=a.get("lastOutcome"),
             lastFailureAtUtc=a.get("lastFailureAtUtc"), lastRequestAtUtc=a.get("lastRequestAtUtc"),
             observedAtUtc=e.get("observedAtUtc"), everFailed=(a.get("failureCountSinceBoot") or 0) > 0,
-            observed=a.get("lastRequestAtUtc") is not None or (a.get("requestCountSinceBoot") or 0) > 0))
+            observed=result_scope != "neverObserved", resultScope=result_scope, isCurrent=is_current,
+            routeStatus=e.get("routeStatus"), allowlistBypassed=is_bypassed, currentAnomaly=current_anomaly))
     running = sorted({agent_family(a.get("agentType")) for a in agents if a.get("running")}
                      - {None, "CC Switch"})
-    configured = provider_mode == "configured"
-    providers = sorted({provider(e.get("originalTargetBaseUrl")) for e in (current if configured else endpoints)
-        if configured or (activity.get(e.get("assetId"), {}).get("state") != "allowlistBypassed"
-            and (activity.get(e.get("assetId"), {}).get("lastRequestAtUtc") is not None
-                 or (activity.get(e.get("assetId"), {}).get("requestCountSinceBoot") or 0) > 0))})
+    providers = sorted({provider(e.get("originalTargetBaseUrl"),
+        allowlist_key(e.get("originalTargetBaseUrl")) in allowlisted if e.get("originalTargetBaseUrl") else False)
+        for e in current})
     discovered = ({agent_family(a.get("agentType")) for a in agents if not a.get("running") and a.get("installed")}
                   | {family_name(e.get("agentFamily")) for e in current}) - set(running) - {None, ""}
     return dict(device=device, onlineState=online_state(device, now), runningAgents=running,
         discoveredAgents=sorted(discovered), providers=providers,
         allowlist=sorted({allowlist_key(e["originalTargetBaseUrl"]) for e in current if bypassed(e)}),
-        hasAnomaly=any(r["observed"] and r["state"] in FAILED for r in requests),
+        hasAnomaly=any(r["currentAnomaly"] for r in requests),
         everAnomaly=any(r["everFailed"] for r in requests),
         otherUnproxied=device.get("operationState") in {"disabled", "disableFailed", "enableFailed"}
             or device.get("proxyState") in {"stopped", "degraded"}
             or any(not bypassed(e) and e.get("routeStatus") != "attached" for e in current),
         dataInsufficient=(device.get("schemaVersion") or 1) < 2
-            or any(p == "无法识别" or p.startswith("未知/中转") for p in providers)
+            or any(p == "无法识别" or p.startswith("本地代理地址") for p in providers)
             or any(e.get("assetId") not in activity for e in current), requests=requests)
 
 
-def select(details, now, scope="online", os=None, provider_mode="observed"):
+def select(details, policy, now, scope="online", os=None):
     rows = []
     for detail in {d["device"]["deviceId"]: d for d in details}.values():
-        view = project(detail, now, provider_mode)
+        view = project(detail, now, policy)
         if (scope == "all" or (scope == "legacyclient" and (view["device"].get("schemaVersion") or 1) < 2)
                 or view["onlineState"] == scope):
             if not os or os.lower() in (view["device"].get("osVersion") or "").lower():
@@ -122,8 +137,8 @@ def select(details, now, scope="online", os=None, provider_mode="observed"):
     return rows
 
 
-def build(details, policy, now, scope="online", os=None, provider_mode="observed"):
-    rows = select(details, now, scope, os, provider_mode)
+def build(details, policy, now, scope="online", os=None):
+    rows = select(details, policy, now, scope, os)
     total = len(rows)
     def percent(n, denominator=total):
         return round(100 * n / denominator, 1) if denominator else 0
@@ -151,7 +166,7 @@ def build(details, policy, now, scope="online", os=None, provider_mode="observed
             allowlist.append(dict(key=url, label=url, deviceCount=0, instanceCount=0, percentage=0, instancePercentage=0, agentFamilies=[]))
     applied = sum(v["device"].get("appliedPolicyVersion") == policy["policyVersion"] for _, v in rows)
     return dict(updatedAtUtc=timestamp(now), dataObservedAtUtc=max((v["device"]["lastSeenAtUtc"] for _, v in rows), default=None),
-        scope=scope, providerMode=provider_mode, totalDevices=total,
+        scope=scope, totalDevices=total,
         onlineDevices=sum(v["onlineState"] == "online" for _, v in rows),
         runningAgentDevices=sum(bool(v["runningAgents"]) for _, v in rows),
         anomalyDevices=sum(v["hasAnomaly"] for _, v in rows), everAnomalyDevices=sum(v["everAnomaly"] for _, v in rows),
@@ -160,19 +175,19 @@ def build(details, policy, now, scope="online", os=None, provider_mode="observed
         legacyDevices=sum((v["device"].get("schemaVersion") or 1) < 2 for _, v in rows), agents=agent_buckets(False), tools=agent_buckets(True),
         providers=buckets((v["device"]["deviceId"], p, "") for _, v in rows for p in v["providers"]),
         errors=buckets((v["device"]["deviceId"], r["state"][0].upper() + r["state"][1:], r["agentFamily"])
-            for _, v in rows for r in v["requests"] if r["observed"] and r["state"] in FAILED),
+            for _, v in rows for r in v["requests"] if r["currentAnomaly"]),
         allowlist=sorted(allowlist, key=lambda b: (-b["deviceCount"], b["key"])),
         operatingSystems=sorted({d["device"].get("osVersion") or "" for d in details}),
         policy=dict(version=policy["policyVersion"], appliedDevices=applied, pendingDevices=total-applied))
 
 
-def drill_down(details, now, scope="online", os=None, provider_mode="observed", kind=None, key=None,
+def drill_down(details, policy, now, scope="online", os=None, kind=None, key=None,
                search=None, skip=0, take=50, agent=None, provider=None, anomaly=None, allowlist=None):
     selected = []
-    for detail, v in select(details, now, scope, os, provider_mode):
+    for detail, v in select(details, policy, now, scope, os):
         matches = {"online": v["onlineState"] == "online", "running": bool(v["runningAgents"]),
             "agent": key in v["runningAgents"], "tool": any(a.get("running") and agent_family(a.get("agentType")) == key for a in detail.get("agents") or []),
-            "provider": key in v["providers"], "error": any(r["observed"] and r["state"] in FAILED and r["state"].lower() == (key or "").lower() for r in v["requests"]),
+            "provider": key in v["providers"], "error": any(r["currentAnomaly"] and r["state"].lower() == (key or "").lower() for r in v["requests"]),
             "anomaly": v["hasAnomaly"], "everAnomaly": v["everAnomaly"],
             "allowlist": bool(v["allowlist"]) if key is None else key in v["allowlist"],
             "otherUnproxied": v["otherUnproxied"], "unknown": v["dataInsufficient"]}

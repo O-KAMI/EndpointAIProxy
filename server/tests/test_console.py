@@ -19,6 +19,9 @@ def test_console_version_has_three_views_and_production_transport_guidance(confi
     for page in ("analytics", "policy", "assets"):
         assert f'data-page="{page}"' in html
     assert 'data-page="analytics" aria-current="page"' in html
-    assert "EndpointAIDLP 0.1.22" in html
+    assert "EndpointAIDLP 0.1.23" in html
+    assert "LLM 当前目标服务分布" in html
+    assert "providerMode" not in html
+    assert "已观测代理请求" not in html
     assert "AES-GCM" in html
     assert "HTTP 地址需显式允许 HTTP 网关" in html

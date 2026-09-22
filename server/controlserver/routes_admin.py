@@ -25,10 +25,9 @@ def pagination(default_take=100):
 
 def analytics_query():
     scope = request.args.get("scope", "online").lower()
-    mode = request.args.get("providerMode", "observed").lower()
-    if scope not in {"online", "all", "stale", "offline", "legacyclient"} or mode not in {"observed", "configured"}:
-        raise ApiProblem("QUERY_INVALID", "Invalid analytics scope or provider mode.")
-    return dict(scope=scope, os=request.args.get("os"), provider_mode=mode)
+    if scope not in {"online", "all", "stale", "offline", "legacyclient"} or "providerMode" in request.args:
+        raise ApiProblem("QUERY_INVALID", "Invalid analytics query.")
+    return dict(scope=scope, os=request.args.get("os"))
 
 
 @admin_bp.get("/analytics")
@@ -42,9 +41,9 @@ def analytics():
 def analytics_devices():
     query = analytics_query()
     skip, take = pagination(50)
-    rows, _ = store().analytics_snapshot()
+    rows, policy = store().analytics_snapshot()
     filters = {key: request.args.get(key) for key in ("kind", "key", "search", "agent", "provider", "anomaly", "allowlist")}
-    return response(drill_down(rows, utcnow(), skip=skip, take=take, **query, **filters))
+    return response(drill_down(rows, policy, utcnow(), skip=skip, take=take, **query, **filters))
 
 
 @admin_bp.get("/policy")

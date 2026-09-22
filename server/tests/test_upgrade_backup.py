@@ -10,11 +10,11 @@ from config import ROOT
 
 
 def test_upgrade_backup_uses_existing_database_without_mutation(mysql_store, tmp_path, monkeypatch, capsys):
-    script = ROOT.parent / 'deployment/update-server-0.1.22.py'
+    script = ROOT.parent / 'deployment/update-server-0.1.23.py'
     binary = os.environ.get('ENDPOINTAI_TEST_MYSQL_BIN')
     if not script.exists() or not binary:
         pytest.skip('Requires deployment bundle and isolated MySQL client')
-    spec = importlib.util.spec_from_file_location('upgrade022_backup', script)
+    spec = importlib.util.spec_from_file_location('upgrade023_backup', script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     old = tmp_path / 'old'
