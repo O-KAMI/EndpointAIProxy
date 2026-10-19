@@ -256,7 +256,9 @@ try {
         }
         $gatewayRequest = Invoke-RestMethod `
             -Uri "http://127.0.0.1:19090/debug/requests/$($jsonPayload.requestId)"
-        if ($gatewayRequest.headers.'X-SF-AI-User-Id'[0] -cne $expectedUserId -or
+        $userHeader = $gatewayRequest.headers.'X-Sf-Userid'
+        if ($null -eq $userHeader) { $userHeader = $gatewayRequest.headers.'X-SF-AI-User-Id' }
+        if ($userHeader[0] -cne $expectedUserId -or
             $gatewayRequest.headers.'X-SF-AI-User-Sid'[0] -cne $e2eUserSid -or
             $gatewayRequest.headers.'X-SF-AI-Agent'[0] -cne 'ClaudeCode' -or
             $gatewayRequest.headers.'X-SF-AI-Original-Base-Url'[0] -cne 'http://127.0.0.1:19090/v1') {

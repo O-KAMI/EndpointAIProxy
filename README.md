@@ -1,5 +1,11 @@
 # EndpointAIProxy
 
+项目入口：[项目地图](CONTEXT.md) · [Win/Mac 审查与日志诊断报告](docs/CLIENT-REVIEW.md)。地图覆盖客户端和生产 Python 服务端；审查缺陷与日志建议已在候选源码修复，验证边界见 [修复报告](docs/CLIENT-FIX-VERIFICATION-20261016.md)。
+
+Go client candidate 0.2.2 is available in [`go-client/`](go-client/README.md), with a
+[feature/verification matrix](docs/GO-CLIENT-PARITY.md). The .NET 0.1.22 build and
+rollback path remain available. DSH support is opt-in; see [integration and acceptance boundaries](docs/DSH-INTEGRATION-20261017.md). Candidate builds do not establish production rollout acceptance.
+
 EndpointAIProxy is a .NET client and control-plane prototype for routing supported AI agent traffic through a local endpoint proxy. It includes the client core, Windows service, macOS service scripts, control server, installer definitions, and tests.
 
 Production addresses, credentials, certificates, and private deployment bundles are intentionally excluded from this public source tree. Configure the control origin, gateway origin, enrollment material, and signing keys through your private deployment process. Example values use the reserved `example.invalid` domain.
@@ -13,3 +19,5 @@ The production Python/MySQL control server source is maintained in [`server/`](s
 For Windows allowlist troubleshooting, run the [one-click diagnostic collector](docs/README-WHITELIST-DIAGNOSTICS.md) with administrator privileges. It combines the client's sanitized diagnostic bundle with read-only cached-policy inspection and live policy-version checks.
 
 The unsigned Apple Silicon package failed an actual IOA root installation: macOS rejected the ad hoc-signed executable, then the postinstall readiness check failed and removed the new service. IOA's reported distribution success did not establish installation success. Developer ID application/package signing, notarization, and native deployment verification remain required before rollout. This repository contains source and placeholders only; supply deployment credentials privately.
+
+当前 Go 0.2.2 / Python 0.1.24 候选修复、覆盖升级与性能门禁见 [实施记录](docs/CLIENT-SERVER-022-024-20261018.md)。生产未部署，旧 .NET 和旧服务端交付保留用于回退。

@@ -26,8 +26,13 @@ main() {
   /bin/chmod 0750 "$SF_DATA" "$SF_DATA/logs" || return 1
   /bin/chmod 0644 "$SF_PLIST" || return 1
   sf_step sf_write_config || return 1
+  sf_step sf_verify_state_before_start || return 1
+  sf_step sf_begin_validation || return 1
   sf_step sf_start || return 1
   sf_step sf_ready || return 1
+  sf_step sf_verify_preserved_identity || return 1
+  sf_step sf_commit_validation || return 1
+  SF_VALIDATION_COMMITTED=1
   SF_STAGE=complete
   sf_log success || return 1
   sf_clear_session || return 1

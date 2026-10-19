@@ -45,5 +45,6 @@ def test_ready_failure_and_exception_log_trace(config):
     assert result.status_code == 500
     assert result.headers["X-Request-ID"] == result.json["error"]["traceId"]
     log = (config.LOG_DIR/"app.log").read_text()
-    assert "Traceback" in log
+    assert "errorClass=INTERNAL_ERROR" in log
+    assert "Synthetic unavailable database" not in log
     assert config.ADMIN_TOKEN not in log

@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import sys
+import pytest
 from config import ROOT
 
 
@@ -29,3 +30,16 @@ def test_secret_generation_is_private_and_never_overwrites(tmp_path):
     assert before.splitlines()[0].split(b"=")[1].decode() not in result.stdout
     assert subprocess.run(command,capture_output=True).returncode != 0
     assert target.read_bytes() == before
+
+
+def test_offline_release_requires_both_complete_locked_architectures(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("package_release_offline", ROOT/"tools/package_release.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    wheels = module.offline_wheels()
+    assert {path.parent.name for path in wheels} == {"aarch64", "x86_64"}
+    assert not any(path.is_symlink() for path in wheels)
+    (tmp_path / "requirements.txt").write_text("required-package==1.0\n")
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    with pytest.raises(RuntimeError, match="Incomplete offline dependencies"):
+        module.offline_wheels()

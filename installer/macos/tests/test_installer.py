@@ -8,9 +8,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -36,13 +38,15 @@ if command == 'ps':
     if 'lstart=' in args: print('Mon Sep 14 12:00:00 2026')
     else:
         if mode == 'process_mismatch' and state['version'] == '0.1.22': print('/opt/other/program')
-        else: print(str(bin_path/'Sf.EndpointAI.Client.Service'))
+        else:
+            bundled=bin_path/'EndpointAIProxy.app/Contents/MacOS/Sf.EndpointAI.Client.Service'
+            print(str(bundled if bundled.is_file() else bin_path/'Sf.EndpointAI.Client.Service'))
     sys.exit(0)
 if command == 'curl':
     if not state.get('alive'): sys.exit(7)
     if mode == 'health_fail' and state['version'] == '0.1.22': sys.exit(7)
     version = '0.1.21' if mode == 'foreign_health' else state['version']
-    print(json.dumps({'status':'ok','clientVersion':version,'lastControlSyncAtUtc':None,
+    print(json.dumps({'status':'ok','deviceId':'40000000-0000-0000-0000-000000000004','clientVersion':version,'lastControlSyncAtUtc':None,
                      'lastControlErrorCode':'offline'})); sys.exit(0)
 if command == 'launchctl':
     action = args[0]
@@ -57,6 +61,10 @@ if command == 'launchctl':
         state['alive'] = mode == 'stop_timeout'
     elif action == 'bootstrap':
         version = (bin_path/'version').read_text()
+        if version.startswith('0.2.'):
+            guard = root/'Library/Application Support/SF/EndpointAIProxy/.installation-pending'
+            if not guard.is_file() or not guard.read_text(): sys.exit(9)
+            if mode == 'guard_start_fail': sys.exit(5)
         if mode == 'start_fail' and version == '0.1.22': sys.exit(5)
         state.update(loaded=True, alive=True, version=version)
     elif action not in ['enable','kickstart']: sys.exit(1)
@@ -91,17 +99,23 @@ class InstallerTests(unittest.TestCase):
             mock = mock_root/command
             mock.write_text(f'#!{sys.executable}\n'+MOCK)
             mock.chmod(0o755)
-        for name in ['InstallerSupport.sh','preinstall','postinstall','Collect-MacInstallerLogs.sh','Recover-MacInstallation.sh']:
+        for name in ['InstallerSupport.sh','preinstall','postinstall','Collect-MacInstallerLogs.sh','Recover-MacInstallation.sh','uninstall.sh']:
             text = (SOURCE/name).read_text()
             for prefix in ['/Library/','/private/etc/','/private/var/run/','/private/var/log/','/usr/local/']:
                 text = text.replace(prefix, str(self.root)+prefix)
             for command, path in [('launchctl','/bin/launchctl'),('ps','/bin/ps'),('curl','/usr/bin/curl'),
                                   ('chown','/usr/sbin/chown'),('sysctl','/usr/sbin/sysctl'),('sleep','/bin/sleep')]:
                 text = text.replace(path, str(mock_root/command))
+            # Only the sandbox copy invokes the synthetic client through Python;
+            # no real installed/signed endpoint executable is launched.
+            if name == 'uninstall.sh':
+                text = text.replace('"$SERVICE" --maintenance', f'"{sys.executable}" "$SERVICE" --maintenance')
             # Only the sandbox copy bypasses root, UID and longer timeouts.
             text = text.replace('$EUID -eq 0','$EUID -ge 0')
             text = text.replace(') -eq 0', f') -eq {os.getuid()}')
-            text = text.replace('SECONDS + 60','SECONDS + 3')
+            # Keep the native healthy readiness budget; only tests expecting a
+            # readiness timeout shorten it, through this sandbox-only seam.
+            text = text.replace('SECONDS + 60','SECONDS + ${ENDPOINTAI_TEST_READY_TIMEOUT:-60}')
             (self.scripts/name).write_text(text)
         self.credentials = {'origin':'http://control.example.invalid:8080','keyId':'fixture-key',
                             'clientToken':'TEST-TOKEN-NOT-PRODUCTION',
@@ -127,7 +141,9 @@ class InstallerTests(unittest.TestCase):
         self.config.write_text("SF_PROXY_DEVICE_ID='fixture-identity'\nSF_PROXY_CONTROL_TOKEN='old-token'\nUSER_SETTING='preserve'\n")
         shutil.copyfile(SOURCE/'com.sf.endpointai.proxy.plist',self.plist)
         (self.data/'state').mkdir()
-        (self.data/'state/client.db').write_text('identity-state')
+        with sqlite3.connect(self.data/'state/client.db') as db:
+            db.execute('CREATE TABLE client_identity(singleton_id INTEGER PRIMARY KEY, device_id TEXT)')
+            db.execute('INSERT INTO client_identity VALUES(1,?)',('40000000-0000-0000-0000-000000000004',))
         self.state(loaded,'0.1.21')
 
     def payload(self):
@@ -141,12 +157,42 @@ class InstallerTests(unittest.TestCase):
 
     def run_script(self, name, success=True, mode='', target='/'):
         env = dict(self.env, MOCK_MODE=mode)
+        if mode in ['health_fail','foreign_health','process_mismatch']:
+            env['ENDPOINTAI_TEST_READY_TIMEOUT']='3'
+        began=time.monotonic()
         result = subprocess.run(['/bin/zsh',str(self.scripts/name),'fixture.pkg','/',target] if name in ['preinstall','postinstall']
                                 else ['/bin/zsh',str(self.scripts/name)],env=env,capture_output=True,text=True)
         for value in [self.credentials['clientToken'],self.credentials['transportKey'],self.credentials['policyHmacKey']]:
             self.assertNotIn(value,result.stdout+result.stderr)
-        self.assertEqual(result.returncode == 0,success,result.stdout+result.stderr)
+        if (result.returncode == 0) != success:
+            evidence=self.failure_evidence(result.returncode, time.monotonic()-began)
+            self.fail('Installer fixture result mismatch: '+json.dumps(evidence,sort_keys=True))
         return result
+
+    def failure_evidence(self, code, elapsed):
+        # Persist only fixed enums and numeric locations in unittest output;
+        # temporary raw logs/configs still get removed by tearDown.
+        stages=set('begin preflight backup stop_service payload postinstall write_config start_service health_check control_plane complete restore_files rollback manual_recovery service_exit environment uninstall_detach uninstall_remove uninstall_recover'.split())
+        outcomes=set('begin validated install_locked recovery_required unsupported_target unsupported_os wrong_architecture invalid_credentials unsafe_path saved unexpected_service_path bootout_failed stopped stop_timeout protected_config_written registered local_ready sync_observed sync_pending not_ready files_restored old_service_ready old_service_not_ready previous_service_state_restored failed prepared success incomplete_snapshot_discarded detached'.split())
+        records=[]
+        for file in sorted(self.logs.glob('install-*.jsonl')):
+            for line in file.read_text().splitlines()[-24:]:
+                try: record=json.loads(line)
+                except (ValueError,TypeError): continue
+                if not isinstance(record,dict): continue
+                safe={}
+                for field,allowed in [('stage',stages),('outcome',outcomes)]:
+                    value=record.get(field)
+                    safe[field]=value if isinstance(value,str) and value in allowed else 'unknown'
+                for field in ['exitCode','lineNumber','lastExitCode','lastSignal']:
+                    value=record.get(field)
+                    if type(value) is int and 0<=value<=1000000: safe[field]=value
+                records.append(safe)
+        actions=[]
+        action_file=self.root/'mock-actions.txt'
+        if action_file.exists():
+            actions=[v if v in ['print','bootout','bootstrap','enable','kickstart'] else 'unknown' for v in action_file.read_text().splitlines()[-24:]]
+        return {'scriptExitCode':code,'elapsedSeconds':round(elapsed,3),'events':records[-24:],'mockActions':actions}
 
     def outcomes(self):
         text='\n'.join(p.read_text() for p in self.logs.glob('*.jsonl'))
@@ -157,9 +203,109 @@ class InstallerTests(unittest.TestCase):
     def assert_old(self):
         self.assertEqual((self.bin/'version').read_text(),'0.1.21')
         self.assertIn("SF_PROXY_CONTROL_TOKEN='old-token'",self.config.read_text())
-        self.assertEqual((self.data/'state/client.db').read_text(),'identity-state')
+        with sqlite3.connect(self.data/'state/client.db') as db:
+            self.assertEqual(db.execute('SELECT device_id FROM client_identity WHERE singleton_id=1').fetchone()[0],'40000000-0000-0000-0000-000000000004')
         self.assertFalse(self.session.exists())
         self.assertFalse(self.lock.exists())
+
+
+    def uninstall_executable(self, bundled=False):
+        executable=self.bin/'Sf.EndpointAI.Client.Service'
+        if bundled:
+            executable=self.bin/'EndpointAIProxy.app/Contents/MacOS/Sf.EndpointAI.Client.Service'
+            executable.parent.mkdir(parents=True)
+        executable.write_text(f'#!{sys.executable}\n'+r'''import json, os, pathlib, sys
+root=pathlib.Path(os.environ['MOCK_ROOT'])
+state=json.loads((root/'mock-state.json').read_text())
+with (root/'detach-actions.txt').open('a') as f: f.write(str(pathlib.Path(sys.argv[0]).relative_to(root))+'\n')
+if state.get('alive'): sys.exit(41)
+if os.environ.get('MOCK_MODE')=='detach_fail': sys.exit(42)
+sys.exit(0)
+''')
+        executable.chmod(0o755)
+        return executable
+
+    def test_uninstall_stops_before_detach_plain(self):
+        self.old_install();self.uninstall_executable()
+        self.run_script('uninstall.sh')
+        self.assertFalse(self.plist.exists());self.assertFalse(self.share.exists())
+        self.assertTrue(self.config.exists());self.assertTrue((self.data/'state/client.db').exists())
+        self.assertIn('detached',self.outcomes())
+        self.assertFalse(self.session.exists());self.assertFalse(self.lock.exists())
+        self.assertIn('bootout',(self.root/'mock-actions.txt').read_text().splitlines())
+
+    def test_uninstall_prefers_bundle_with_flat_wrapper(self):
+        self.old_install();exe=self.uninstall_executable(bundled=True)
+        self.run_script('uninstall.sh')
+        self.assertEqual((self.root/'detach-actions.txt').read_text().strip(),str(exe.relative_to(self.root)))
+
+    def test_uninstall_detach_failure_restores_service_and_keeps_files(self):
+        self.old_install();self.uninstall_executable()
+        self.run_script('uninstall.sh',False,mode='detach_fail')
+        self.assertTrue(self.plist.exists());self.assertTrue(self.share.exists())
+        with sqlite3.connect(self.data/'state/client.db') as db:
+            self.assertEqual(db.execute('SELECT device_id FROM client_identity WHERE singleton_id=1').fetchone()[0],'40000000-0000-0000-0000-000000000004')
+        state=json.loads((self.root/'mock-state.json').read_text())
+        self.assertTrue(state['loaded']);self.assertTrue(state['alive'])
+        self.assertIn('old_service_ready',self.outcomes())
+        self.assertNotIn('success',self.outcomes())
+
+    def test_uninstall_stop_failure_never_detaches(self):
+        self.old_install();self.uninstall_executable()
+        self.run_script('uninstall.sh',False,mode='stop_fail')
+        self.assertFalse((self.root/'detach-actions.txt').exists())
+        self.assertTrue(self.plist.exists());self.assertTrue(self.share.exists())
+        self.assertTrue(json.loads((self.root/'mock-state.json').read_text())['loaded'])
+
+    def test_uninstall_stop_timeout_never_detaches(self):
+        self.old_install();self.uninstall_executable()
+        self.run_script('uninstall.sh',False,mode='stop_timeout')
+        self.assertFalse((self.root/'detach-actions.txt').exists())
+        self.assertTrue(self.plist.exists());self.assertTrue(self.share.exists())
+        self.assertIn('stop_timeout',self.outcomes())
+
+    def test_uninstall_restore_failure_is_visible_and_keeps_registration(self):
+        self.old_install();self.uninstall_executable()
+        # Only the sandbox command simulation rejects restoration.
+        mock=self.root/'mocks/launchctl'
+        mock.write_text(mock.read_text().replace("elif action == 'bootstrap':", "elif action == 'bootstrap':\n        if mode == 'detach_fail': sys.exit(5)"))
+        result=self.run_script('uninstall.sh',False,mode='detach_fail')
+        self.assertIn('UNINSTALL_SERVICE_RESTORE_FAILED',result.stderr)
+        self.assertIn('old_service_not_ready',self.outcomes())
+        self.assertTrue(self.plist.exists());self.assertTrue(self.share.exists())
+        self.assertTrue(self.session.exists());self.assertTrue(self.lock.exists())
+
+    def test_uninstall_removal_failure_restores_registration_and_tools(self):
+        self.old_install();self.uninstall_executable()
+        diagnostics=self.root/'usr/local/sbin/sf-endpointai-diagnostics'
+        diagnostics.write_text('fixture-diagnostic-helper')
+        script=self.scripts/'uninstall.sh'
+        script.write_text(script.read_text().replace('/bin/rm -rf "$SF_SHARE"','/usr/bin/false'))
+        self.run_script('uninstall.sh',False)
+        self.assertTrue(self.plist.exists());self.assertTrue((self.share/'old-marker').exists())
+        self.assertEqual(diagnostics.read_text(),'fixture-diagnostic-helper')
+        self.assertTrue(json.loads((self.root/'mock-state.json').read_text())['loaded'])
+        self.assertIn('old_service_ready',self.outcomes())
+
+    def test_uninstall_failure_does_not_start_originally_stopped_service(self):
+        self.old_install(loaded=False);self.uninstall_executable()
+        self.run_script('uninstall.sh',False,mode='detach_fail')
+        self.assertTrue(self.plist.exists());self.assertTrue(self.share.exists())
+        self.assertFalse(json.loads((self.root/'mock-state.json').read_text())['loaded'])
+        self.assertNotIn('bootstrap',(self.root/'mock-actions.txt').read_text().splitlines())
+
+    def test_collector_matches_new_go_package_without_bundle_id(self):
+        install_log=self.root/'private/var/log/install.log'
+        install_log.parent.mkdir(parents=True,exist_ok=True)
+        stamp=subprocess.check_output(['/bin/date','+%Y-%m-%d %H:%M:%S'],text=True).strip()
+        install_log.write_text(stamp+' Installer: EndpointAIDLP-Client-0.2.0-development-osx-arm64.pkg finished\n'+stamp+' Installer: EndpointAIDLP-Client-0.2.0-osx-x64.pkg failed\n'+stamp+' OtherProduct-9.9.9.pkg finished\n')
+        result=self.run_script('Collect-MacInstallerLogs.sh')
+        archive=Path(result.stdout.strip().splitlines()[-1])
+        with zipfile.ZipFile(archive) as z:
+            events=[n for n in z.namelist() if n.endswith('system-install-events.jsonl')]
+            self.assertEqual(len(events),1)
+            records=[json.loads(v) for v in z.read(events[0]).decode().splitlines()]
+            self.assertEqual([v['event'] for v in records],['package_finished','package_failure'])
 
     def test_fresh_install_offline_is_successful(self):
         self.run_script('preinstall'); self.payload(); self.run_script('postinstall')
@@ -168,6 +314,74 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.config.stat().st_mode & 0o777,0o600)
         self.assertEqual(self.logs.stat().st_mode & 0o777,0o700)
 
+    def go_payload(self):
+        self.payload()
+        (self.bin/'version').write_text('0.2.0')
+        bundled=self.bin/'EndpointAIProxy.app/Contents/MacOS/Sf.EndpointAI.Client.Service'
+        bundled.parent.mkdir(parents=True)
+        bundled.write_text('synthetic native executable')
+
+    def select_go_package(self):
+        support=self.scripts/'InstallerSupport.sh'
+        support.write_text(support.read_text().replace('SF_VERSION=0.1.22','SF_VERSION=0.2.0').replace('SF_IMPLEMENTATION=dotnet','SF_IMPLEMENTATION=go'))
+        (self.scripts/'package-version').write_text('0.2.0')
+
+    def test_go_development_bundle_upgrade_preserves_state(self):
+        self.old_install();self.select_go_package()
+        self.run_script('preinstall');self.go_payload();self.run_script('postinstall')
+        with sqlite3.connect(self.data/'state/client.db') as db:
+            self.assertEqual(db.execute('SELECT device_id FROM client_identity WHERE singleton_id=1').fetchone()[0],'40000000-0000-0000-0000-000000000004')
+        self.assertEqual((self.bin/'version').read_text(),'0.2.0')
+        self.assertIn('local_ready',self.outcomes())
+
+    def test_go_development_bundle_failure_restores_old_dotnet_layout(self):
+        self.old_install();self.select_go_package()
+        self.run_script('preinstall');self.go_payload();self.run_script('postinstall',False,'foreign_health')
+        self.assert_old()
+        self.assertFalse((self.bin/'EndpointAIProxy.app').exists())
+
+    def test_go_commit_releases_installation_guard(self):
+        self.old_install();self.select_go_package()
+        self.run_script('preinstall');self.go_payload();self.run_script('postinstall')
+        self.assertFalse((self.data/'.installation-pending').exists())
+        self.assertFalse(self.session.exists())
+
+    def test_go_start_failure_restores_identity_and_releases_guard(self):
+        self.old_install();self.select_go_package()
+        self.run_script('preinstall');self.go_payload()
+        self.run_script('postinstall',False,'guard_start_fail')
+        self.assert_old()
+        self.assertFalse((self.data/'.installation-pending').exists())
+
+    def test_go_changed_database_rejected_before_candidate_start(self):
+        self.old_install();self.select_go_package()
+        self.run_script('preinstall');self.go_payload()
+        with sqlite3.connect(self.data/'state/client.db') as db:
+            db.execute('UPDATE client_identity SET device_id=?',('50000000-0000-0000-0000-000000000005',))
+        self.run_script('postinstall',False)
+        self.assert_old()
+        self.assertFalse((self.data/'.installation-pending').exists())
+
+    def test_go_cleanup_failure_after_commit_does_not_restore_old_state(self):
+        self.old_install();self.select_go_package()
+        self.run_script('preinstall');self.go_payload()
+        post=self.scripts/'postinstall'
+        post.write_text(post.read_text().replace('  sf_clear_session || return 1', '  /usr/bin/false || return 1'))
+        self.run_script('postinstall',False)
+        self.assertEqual((self.bin/'version').read_text(),'0.2.0')
+        self.assertFalse((self.data/'.installation-pending').exists())
+        self.assertTrue(self.session.exists())
+        self.assertIn('recovery_required',self.outcomes())
+
+    def test_go_ephemeral_shm_change_does_not_reject_preserved_state(self):
+        self.old_install();self.select_go_package()
+        # SHM is coordination metadata, never the identity/WAL durability proof.
+        (self.data/'state/client.db-shm').write_bytes(b'old coordination')
+        self.run_script('preinstall');self.go_payload()
+        (self.data/'state/client.db-shm').write_bytes(b'new coordination')
+        self.run_script('postinstall')
+        self.assertFalse((self.data/'.installation-pending').exists())
+
     def test_upgrade_and_reinstall_preserve_identity_and_settings(self):
         self.old_install()
         for _ in range(2):
@@ -175,7 +389,8 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("SF_PROXY_DEVICE_ID='fixture-identity'",self.config.read_text())
         self.assertIn("USER_SETTING='preserve'",self.config.read_text())
         self.assertEqual(self.config.read_text().count('SF_PROXY_CONTROL_TOKEN='),1)
-        self.assertEqual((self.data/'state/client.db').read_text(),'identity-state')
+        with sqlite3.connect(self.data/'state/client.db') as db:
+            self.assertEqual(db.execute('SELECT device_id FROM client_identity WHERE singleton_id=1').fetchone()[0],'40000000-0000-0000-0000-000000000004')
 
     def test_wrong_architecture_never_stops_old_service(self):
         self.old_install(); (self.scripts/'package-arch').write_text('x86_64')
@@ -258,6 +473,28 @@ class InstallerTests(unittest.TestCase):
     def test_payload_interruption_can_be_recovered(self):
         self.old_install(); self.run_script('preinstall'); self.payload()
         self.run_script('Recover-MacInstallation.sh'); self.assert_old()
+
+    def test_healthy_readiness_survives_slow_mock_scheduling(self):
+        # One healthy verification iteration deliberately exceeds the old
+        # fixture's 3s wall-clock budget. Production needs two stable samples.
+        for command in ['ps','curl']:
+            mock=self.root/'mocks'/command
+            mock.write_text(mock.read_text().replace(
+                "bin_path = root/'Library/Application Support/SF/EndpointAIProxy/bin'",
+                "bin_path = root/'Library/Application Support/SF/EndpointAIProxy/bin'\nif state.get('alive') and 'lstart=' not in args: time.sleep(1.6)"))
+        self.run_script('preinstall');self.payload();self.run_script('postinstall')
+        self.assertIn('local_ready',self.outcomes())
+        self.assertNotIn('not_ready',self.outcomes())
+
+    def test_failure_evidence_rejects_untrusted_log_fields(self):
+        self.logs.mkdir(parents=True)
+        secret=self.credentials['clientToken']
+        (self.logs/'install-fixture.jsonl').write_text(json.dumps({
+            'stage':secret,'outcome':secret,'exitCode':secret,
+            'lineNumber':23,'token':secret,'member':secret})+'\n'+json.dumps([])+'\n'+json.dumps({'stage':[],'outcome':{}})+'\n')
+        evidence=self.failure_evidence(1,0.25)
+        self.assertNotIn(secret,json.dumps(evidence))
+        self.assertEqual(evidence['events'],[{'stage':'unknown','outcome':'unknown','lineNumber':23},{'stage':'unknown','outcome':'unknown'}])
 
     def test_collection_exports_no_credentials_or_unfiltered_output(self):
         self.run_script('preinstall'); self.payload(); self.run_script('postinstall')

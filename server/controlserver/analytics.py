@@ -33,11 +33,13 @@ def agent_family(value):
         return "Codex"
     if value in {"qodercli", "qoderide"}:
         return "Qoder"
+    if value == "deepseekharness":
+        return "DSH"
     return "CC Switch" if value == "ccswitch" else None
 
 
 def family_name(value):
-    return {"claude": "Claude", "codex": "Codex", "qoder": "Qoder"}.get((value or "").lower(), value or "")
+    return {"claude": "Claude", "codex": "Codex", "qoder": "Qoder", "deepseekharness": "DSH"}.get((value or "").lower(), value or "")
 
 
 def provider(target, allowlisted=False):

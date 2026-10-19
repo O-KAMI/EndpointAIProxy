@@ -37,3 +37,6 @@ server/conf/mysql_prd.properties
 server/conf/secrets.env
 *.sql.gz
 server/deployment/wheelhouse/
+
+# Local Go command build outputs
+go-client/*.exe

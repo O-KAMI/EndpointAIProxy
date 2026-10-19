@@ -76,9 +76,13 @@ def install_transport(app):
     @app.post("/api/transport/v1")
     def transport():
         cfg = app.extensions["control_config"]
+        started = time.perf_counter()
+        g.control_stage = "transport_validate"
         try:
             envelope = request.get_json()
             inner = open_envelope(cfg.TRANSPORT_KEY, cfg.TRANSPORT_KEY_ID, envelope, "request")
+            # This ID is canonical and authenticated; never record unauthenticated envelope fields.
+            g.control_envelope_id = envelope["requestId"]
             if not isinstance(inner, dict) or set(inner) != {"method", "path", "query", "token", "body"}:
                 raise ValueError("Invalid inner request")
             method, path, query, token = (inner[k] for k in ("method", "path", "query", "token"))
@@ -94,12 +98,14 @@ def install_transport(app):
         except Exception:
             return response({"error": "INVALID_TRANSPORT"}, 400)
         # Claim after authentication, before dispatch, in its own committed transaction.
+        g.control_stage = "transport_replay"
         if not app.extensions["control_store"].claim_transport(envelope):
             return response({"error": "INVALID_TRANSPORT"}, 400)
         peer = request.remote_addr
         with app.test_request_context(path, method=method, query_string=query, data=body,
                 headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
-                environ_overrides={"REMOTE_ADDR": peer, "endpointai.transport": INTERNAL}):
+                environ_overrides={"REMOTE_ADDR": peer, "endpointai.transport": INTERNAL,
+                                   "endpointai.control_envelope_id": envelope["requestId"]}):
             try:
                 result = app.full_dispatch_request()
             except Exception as exc:
@@ -107,4 +113,10 @@ def install_transport(app):
             value = dict(status=result.status_code, body=b64(result.get_data()),
                          headers={k: v for k, v in result.headers.items() if k.lower() in
                                   ("x-sf-policy-signature", "content-type", "x-request-id")})
+        # Flask nested request contexts share g: restore the outer timing/stage explicitly.
+        # Preserve the existing outer trace/response-ID behavior while naming the business ID.
+        g.control_envelope_id = envelope["requestId"]
+        g.business_request_id = value["headers"].get("X-Request-ID", "")
+        g.control_stage = "transport_complete"
+        g.request_started = started
         return response(seal(cfg.TRANSPORT_KEY, cfg.TRANSPORT_KEY_ID, envelope["requestId"], value, "response"))

@@ -1,6 +1,7 @@
 import json
 from flask import Blueprint, current_app
 from .http import cfg, store, response
+from .observability import safe_exception
 
 health_bp = Blueprint("health", __name__)
 
@@ -15,8 +16,8 @@ def live():
 def ready():
     try:
         policy = store().policy()
-    except Exception:
-        current_app.logger.exception("Readiness database check failed")
+    except Exception as exc:
+        current_app.logger.error("Readiness database check failed stage=readiness errorClass=DATABASE_UNAVAILABLE errorType=%s errorNumber=%s sqlState=%s safeFrames=%s", *safe_exception(exc))
         return response({"status": "not_ready", "error": "DATABASE_UNAVAILABLE"}, 503)
     from .backup import read_backup_state
     state = read_backup_state(cfg())

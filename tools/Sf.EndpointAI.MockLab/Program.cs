@@ -92,7 +92,9 @@ static async Task HandleMockRequestAsync(
     HttpContext context,
     ConcurrentDictionary<Guid, ReceivedRequest> received)
 {
-    var requestId = Guid.TryParse(context.Request.Headers["X-SF-AI-Request-Id"], out var parsed)
+    var headerId = context.Request.Headers["X-Request-Id"].FirstOrDefault()
+        ?? context.Request.Headers["X-SF-AI-Request-Id"].FirstOrDefault();
+    var requestId = Guid.TryParse(headerId, out var parsed)
         ? parsed
         : Guid.NewGuid();
     var body = await ReadBodyAsync(context.Request, context.RequestAborted);

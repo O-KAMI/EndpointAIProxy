@@ -38,11 +38,11 @@ for file in "${files[@]:0:20}"; do
         [[ "$major" =~ '^[0-9]{1,3}$' ]] || major=0
         /usr/bin/printf '{"stage":"environment","identity":"root","architecture":"%s","macOSMajor":%d}\n' "$architecture" "$major" >> "$output"
         continue ;;
-      begin|preflight|backup|stop_service|payload|postinstall|write_config|start_service|health_check|control_plane|complete|restore_files|rollback|manual_recovery) ;;
+      uninstall_detach|uninstall_remove|uninstall_recover|begin|preflight|backup|stop_service|payload|postinstall|write_config|start_service|health_check|control_plane|complete|restore_files|rollback|manual_recovery) ;;
       *) print '{"outcome":"unreadable_log_entry"}' >> "$output"; continue ;;
     esac
     case "$outcome" in
-      begin|validated|install_locked|recovery_required|unsupported_target|unsupported_os|wrong_architecture|invalid_credentials|unsafe_path|saved|unexpected_service_path|bootout_failed|stopped|stop_timeout|protected_config_written|registered|local_ready|sync_observed|sync_pending|not_ready|files_restored|old_service_ready|old_service_not_ready|previous_service_state_restored|failed|prepared|success|incomplete_snapshot_discarded) ;;
+      detached|begin|validated|install_locked|recovery_required|unsupported_target|unsupported_os|wrong_architecture|invalid_credentials|unsafe_path|saved|unexpected_service_path|bootout_failed|stopped|stop_timeout|protected_config_written|registered|local_ready|sync_observed|sync_pending|not_ready|files_restored|old_service_ready|old_service_not_ready|previous_service_state_restored|failed|prepared|success|incomplete_snapshot_discarded) ;;
       *) outcome=unreadable_log_entry ;;
     esac
     stamp=$(print -rn -- "$line" | /usr/bin/plutil -extract timeUtc raw -o - - 2>/dev/null || true)
@@ -75,7 +75,7 @@ if [[ -f "$system_log" ]] && sf_safe_path "$system_log"; then
     [[ "$epoch" == <-> ]] && cutoff=$(/bin/date -r "$epoch" '+%Y-%m-%d %H:%M:%S')
   fi
   /usr/bin/tail -n 20000 "$system_log" | /usr/bin/awk -v cutoff="$cutoff" '
-    substr($0,1,19) >= cutoff && /com\.sf\.endpointai\.proxy|EndpointAIDLP-Client-0\.1\.22-osx-(arm64|x64)\.pkg/ {
+    substr($0,1,19) >= cutoff && /com\.sf\.endpointai\.proxy|EndpointAIDLP-Client-[0-9]+\.[0-9]+\.[0-9]+(-development)?-osx-(arm64|x64)\.pkg/ {
       event="package_event"
       if ($0 ~ /[Ff]ail|[Ee]rror/) event="package_failure"
       else if ($0 ~ /[Ss]uccess|[Ff]inish/) event="package_finished"
@@ -93,7 +93,7 @@ loaded=not_running
 executable=''
 [[ "$pid" =~ '^[0-9]+$' ]] && executable=$(/bin/ps -ww -p "$pid" -o comm= 2>/dev/null || true)
 health=''
-if [[ "$executable" == "$SF_BIN/Sf.EndpointAI.Client.Service" ]]; then
+if [[ "$executable" == "$(sf_client_executable)" ]]; then
   loaded=running
   health=$(/usr/bin/curl --silent --fail --max-time 2 --noproxy '*' http://127.0.0.1:18080/healthz 2>/dev/null || true)
 fi

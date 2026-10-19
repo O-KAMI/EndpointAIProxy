@@ -106,5 +106,5 @@ def command_status(command_id):
         raise ApiProblem("COMMAND_STATUS_INVALID", "The command status update is invalid.")
     authenticate_device(update.deviceId)
     if not store().update_command(update):
-        raise ApiProblem("COMMAND_STATUS_CONFLICT", "The command is terminal, missing, or belongs to another device.", 409)
+        raise ApiProblem("COMMAND_STATUS_CONFLICT", "The command is missing, belongs to another device, or conflicts with its stored result.", 409)
     return response(status=202)

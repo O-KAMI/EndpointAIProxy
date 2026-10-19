@@ -51,6 +51,55 @@ def test_transport_policy_token_hidden_and_raw_signature(mysql_store):
     assert client.get("/api/v1/policy", headers={"X-Forwarded-Proto":"https", "endpointai.transport":"true"}).status_code == 403
 
 
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_completed_command_retry_with_new_authenticated_envelope(mysql_store, status):
+    from controlserver.models import HeartbeatV2Request, CreateRemoteCommandRequest
+    from controlserver.security import utcnow
+    cfg = mysql_store.cfg
+    client = create_app(cfg, mysql_store).test_client()
+    enrolled = send(client, cfg, envelope(cfg, "/api/v2/enroll", FIXTURE["enrollment"]))
+    credential = json.loads(base64.b64decode(enrolled["body"]))
+    device, token = credential["deviceId"], credential["deviceToken"]
+    mysql_store.heartbeat(HeartbeatV2Request.model_validate(FIXTURE["heartbeat"]), 60, "127.0.0.1")
+    command = mysql_store.create_command(device,
+        CreateRemoteCommandRequest(type="disableProxy", reason="Synthetic retry test", expiresInMinutes=10), "test")
+    mysql_store.lease(device)
+    body = dict(schemaVersion=1, deviceId=device, commandId=command["commandId"], status=status,
+                observedAtUtc=utcnow().isoformat(), resultCode=None, resultSummary="Synthetic result")
+    path = f"/api/v2/commands/{command['commandId']}/status"
+    first = envelope(cfg, path, body, token)
+    # The first response may be lost at the client after this database commit.
+    assert send(client, cfg, first)["status"] == 202
+    original = mysql_store.commands(device)[0]
+    retry = envelope(cfg, path, body, token)
+    assert retry["requestId"] != first["requestId"]
+    assert send(client, cfg, retry)["status"] == 202
+    assert mysql_store.commands(device)[0] == original
+    assert client.post("/api/transport/v1", json=first).status_code == 400
+    assert send(client, cfg, envelope(cfg, path, dict(body, resultSummary="Conflicting result"), token))["status"] == 409
+    assert mysql_store.commands(device)[0] == original
+
+
+@pytest.mark.parametrize("wire_api", ["anthropicMessages", "openAiResponses", "chatCompletions"])
+def test_dsh_heartbeat_database_and_console_analytics_compatibility(mysql_store, wire_api):
+    cfg = mysql_store.cfg
+    client = create_app(cfg, mysql_store).test_client()
+    enrolled = send(client, cfg, envelope(cfg, "/api/v2/enroll", FIXTURE["enrollment"]))
+    credential = json.loads(base64.b64decode(enrolled["body"]))
+    payload = copy.deepcopy(FIXTURE["heartbeat"])
+    payload["agents"][0].update(agentType="deepseekHarness", displayName="DSH", running=True)
+    payload["endpoints"][0].update(agentFamily="deepseekHarness", wireApi=wire_api,
+                                  providerId="dsh:synthetic:" + "a" * 64)
+    assert send(client, cfg, envelope(cfg, "/api/v2/heartbeat", payload, credential["deviceToken"]))["status"] == 200
+    detail = mysql_store.details(credential["deviceId"])
+    assert detail["agents"][0]["agentType"] == "deepseekHarness"
+    assert detail["endpoints"][0]["agentFamily"] == "deepseekHarness"
+    assert detail["endpoints"][0]["wireApi"] == wire_api
+    stats = client.get("/admin/v1/analytics?scope=all", headers={"Authorization": "Bearer " + cfg.ADMIN_TOKEN})
+    assert stats.status_code == 200
+    assert any(item["key"] == "DSH" for item in stats.json["agents"])
+
+
 def test_encrypted_errors_and_plain_admin(mysql_store, monkeypatch):
     cfg = mysql_store.cfg
     client = create_app(cfg, mysql_store).test_client()
@@ -132,7 +181,8 @@ def test_migration_preserves_business_and_is_idempotent(mysql_store):
 def dotnet():
     binary = os.environ.get("ENDPOINTAI_TEST_DOTNET")
     if not binary: pytest.skip("Set ENDPOINTAI_TEST_DOTNET for .NET interop")
-    return [binary, str(ROOT / "artifacts/interop/Interop.dll")]
+    assembly = os.environ.get("ENDPOINTAI_TEST_INTEROP", str(ROOT / "artifacts/interop/Interop.dll"))
+    return [binary, assembly]
 
 
 def test_dotnet_rejects_unauthenticated_and_malformed_http():

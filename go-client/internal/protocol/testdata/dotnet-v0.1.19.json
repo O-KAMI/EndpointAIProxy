@@ -1,0 +1,223 @@
+{
+  "source": "Original 0.1.19 contracts and PolicySignatureVerifier; synthetic data only",
+  "commandBody": "{\"schemaVersion\":1,\"commandId\":\"30000000-0000-0000-0000-000000000003\",\"deviceId\":\"10000000-0000-0000-0000-000000000001\",\"type\":\"disableProxy\",\"issuedAtUtc\":\"2026-09-13T01:02:03.1234+00:00\",\"expiresAtUtc\":\"2026-09-13T01:12:03.1234+00:00\"}",
+  "commandSignature": "v1:GV_TWY_AxsvhvlCL3vRvpCGNhoRYOg2p49ayyYmRGco",
+  "policyBody": "{\"schemaVersion\":1,\"serverInstanceId\":\"40000000-0000-0000-0000-000000000004\",\"policyVersion\":1,\"enabled\":true,\"routeMode\":\"fixedGateway\",\"gatewayOrigin\":\"http://security-proxy.sf-express.com\",\"allowInsecureGateway\":true,\"pollIntervalSeconds\":60,\"heartbeatIntervalSeconds\":60,\"issuedAtUtc\":\"2026-09-13T01:02:03.1234+00:00\",\"allowlistedBaseUrls\":[\"https://claudecode.sf-express.com/ccr\"]}",
+  "policySignature": "v1:9tg9vUiB-bGTZXMaIdS8Tfnv-3EzVt9EA-kwU4_NM3Q",
+  "heartbeat": {
+    "schemaVersion": 2,
+    "heartbeatId": "50000000-0000-0000-0000-000000000005",
+    "observedAtUtc": "2026-09-13T01:02:03.1234+00:00",
+    "device": {
+      "deviceId": "10000000-0000-0000-0000-000000000001",
+      "hostname": "测试终端",
+      "osVersion": "Windows 11",
+      "serviceVersion": "0.1.19",
+      "bootId": "60000000-0000-0000-0000-000000000006"
+    },
+    "runtime": {
+      "serviceStartedAtUtc": "2026-09-13T01:02:03.1234+00:00",
+      "uptimeSeconds": 123,
+      "operationState": "enabled",
+      "proxyListenerAvailable": true,
+      "lastControlSyncAtUtc": "2026-09-13T01:02:03.1234+00:00",
+      "lastReconcileAtUtc": "2026-09-13T01:02:03.1234+00:00",
+      "lastReconcileResult": "ok",
+      "lastReconcileErrorCode": null
+    },
+    "policy": {
+      "lastReceivedVersion": 1,
+      "appliedVersion": 1,
+      "applyStatus": "applied",
+      "lastErrorCode": null,
+      "lastErrorSummary": null
+    },
+    "proxy": {
+      "state": "listening",
+      "listenEndpoint": "127.0.0.1:18080",
+      "activeRouteCount": 1,
+      "auditState": "healthy"
+    },
+    "users": [
+      {
+        "sid": "S-1-test",
+        "accountName": "test"
+      }
+    ],
+    "agents": [
+      {
+        "instanceId": "70000000-0000-0000-0000-000000000007",
+        "userSid": "S-1-test",
+        "agentType": "claudeCli",
+        "displayName": "Claude Code",
+        "version": "1.0",
+        "installMethod": "npm",
+        "discoveryConfidence": 100,
+        "installed": true,
+        "running": true,
+        "routerType": null,
+        "ccSwitchVersion": null,
+        "ccSwitchMode": null,
+        "routeStatus": "attached",
+        "observedTargetOrigin": "https://api.anthropic.com",
+        "lastSeenAtUtc": "2026-09-13T01:02:03.1234+00:00"
+      }
+    ],
+    "endpoints": [
+      {
+        "assetId": "20000000-0000-0000-0000-000000000002",
+        "userSid": "S-1-test",
+        "agentFamily": "claude",
+        "configurationSource": "direct",
+        "providerId": null,
+        "endpointId": null,
+        "isCurrent": true,
+        "configuredModel": "test-model",
+        "wireApi": "anthropicMessages",
+        "originalTargetBaseUrl": "https://api.anthropic.com",
+        "effectiveConfiguredBaseUrl": "http://127.0.0.1:18080/r/test",
+        "localRouteUrl": "http://127.0.0.1:18080/r/test",
+        "allowlistBypassed": false,
+        "routeStatus": "attached",
+        "observedAtUtc": "2026-09-13T01:02:03.1234+00:00"
+      }
+    ],
+    "activity": [
+      {
+        "assetId": "20000000-0000-0000-0000-000000000002",
+        "state": "succeeded",
+        "lastRequestAtUtc": "2026-09-13T01:02:03.1234+00:00",
+        "lastSuccessAtUtc": "2026-09-13T01:02:03.1234+00:00",
+        "lastFailureAtUtc": null,
+        "lastHttpStatusCode": 200,
+        "lastOutcome": "ok",
+        "lastErrorCode": null,
+        "lastGatewayRoundTripMilliseconds": 12.5,
+        "requestCountSinceBoot": 1,
+        "successCountSinceBoot": 1,
+        "failureCountSinceBoot": 0
+      }
+    ]
+  },
+  "commandVectors": [
+    {
+      "body": "{\"schemaVersion\":1,\"commandId\":\"30000000-0000-0000-0000-000000000003\",\"deviceId\":\"10000000-0000-0000-0000-000000000001\",\"type\":\"disableProxy\",\"issuedAtUtc\":\"2026-09-13T00:00:00+00:00\",\"expiresAtUtc\":\"2026-09-13T01:12:03.1234+00:00\"}",
+      "signature": "v1:JYzr8iFuxzzWefv0vJKN0EWmGNhG7D6-wCajXZZDFYs"
+    },
+    {
+      "body": "{\"schemaVersion\":1,\"commandId\":\"30000000-0000-0000-0000-000000000003\",\"deviceId\":\"10000000-0000-0000-0000-000000000001\",\"type\":\"disableProxy\",\"issuedAtUtc\":\"2026-09-13T00:00:00.1+00:00\",\"expiresAtUtc\":\"2026-09-13T01:12:03.1234+00:00\"}",
+      "signature": "v1:dfM4HYpZN_Ern24DPZFtlnL9nbG0wdfpaD6tS0MKWpE"
+    },
+    {
+      "body": "{\"schemaVersion\":1,\"commandId\":\"30000000-0000-0000-0000-000000000003\",\"deviceId\":\"10000000-0000-0000-0000-000000000001\",\"type\":\"disableProxy\",\"issuedAtUtc\":\"2026-09-13T00:00:00.1234+00:00\",\"expiresAtUtc\":\"2026-09-13T01:12:03.1234+00:00\"}",
+      "signature": "v1:PLe14LIVDHkdHxvmNitkxCHuF0b_w6cPWSXqPFRbpyg"
+    },
+    {
+      "body": "{\"schemaVersion\":1,\"commandId\":\"30000000-0000-0000-0000-000000000003\",\"deviceId\":\"10000000-0000-0000-0000-000000000001\",\"type\":\"disableProxy\",\"issuedAtUtc\":\"2026-09-13T00:00:00.123456+00:00\",\"expiresAtUtc\":\"2026-09-13T01:12:03.1234+00:00\"}",
+      "signature": "v1:CEWx5GQt5llB9xpJgC2k4aVBMb2KCLpGvlrsYqy3sU4"
+    }
+  ],
+  "enrollment": {
+    "schemaVersion": 2,
+    "deviceId": "10000000-0000-0000-0000-000000000001",
+    "hostname": "测试终端",
+    "serviceVersion": "0.1.19"
+  },
+  "allowlistVectors": [
+    {
+      "input": " HTTPS://Example.COM:443/api/ ",
+      "normalized": "https://example.com/api",
+      "valid": true
+    },
+    {
+      "input": "http://example.com:80/",
+      "normalized": "http://example.com",
+      "valid": true
+    },
+    {
+      "input": "https://example.com/a/../b",
+      "normalized": "https://example.com/b",
+      "valid": true
+    },
+    {
+      "input": "http://[::1]:18080/api/",
+      "normalized": "http://[::1]:18080/api",
+      "valid": true
+    },
+    {
+      "input": "https://例子.测试/路径",
+      "normalized": "https://xn--fsqu00a.xn--0zwm56d/%E8%B7%AF%E5%BE%84",
+      "valid": true
+    },
+    {
+      "input": "https://example.com/a/%2e%2e/b",
+      "normalized": "https://example.com/b",
+      "valid": true
+    },
+    {
+      "input": "https://example.com/a%2fb",
+      "normalized": "https://example.com/a%2fb",
+      "valid": true
+    },
+    {
+      "input": "http://127.1/api",
+      "normalized": "http://127.0.0.1/api",
+      "valid": true
+    },
+    {
+      "input": "http://2130706433/api",
+      "normalized": "http://127.0.0.1/api",
+      "valid": true
+    },
+    {
+      "input": "https://a_b.example/api",
+      "normalized": "https://a_b.example/api",
+      "valid": true
+    },
+    {
+      "input": "https://exa mple.com",
+      "normalized": null,
+      "valid": false
+    },
+    {
+      "input": "https://example.com?",
+      "normalized": null,
+      "valid": false
+    },
+    {
+      "input": "https://example.com#",
+      "normalized": null,
+      "valid": false
+    },
+    {
+      "input": "https://@example.com",
+      "normalized": null,
+      "valid": false
+    },
+    {
+      "input": "https://example.com/a//b/",
+      "normalized": "https://example.com/a//b",
+      "valid": true
+    },
+    {
+      "input": "https://example.com/path%zz",
+      "normalized": "https://example.com/path%25zz",
+      "valid": true
+    },
+    {
+      "input": "https://example.com/..",
+      "normalized": "https://example.com",
+      "valid": true
+    },
+    {
+      "input": "https://example.com/a/./",
+      "normalized": "https://example.com/a",
+      "valid": true
+    },
+    {
+      "input": "http://0x7f000001/api",
+      "normalized": "http://127.0.0.1/api",
+      "valid": true
+    }
+  ]
+}

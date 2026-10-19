@@ -144,3 +144,35 @@ def test_console_migrates_original_interactions(config):
                   'confirmedCommand=commands.find', 'DetailRefreshIntervalMilliseconds=15000', '命令审计'):
         assert value in html
     assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+
+
+def test_dsh_agent_type_is_append_only_and_old_agents_still_parse():
+    from controlserver.models import AgentType
+    old_names = ["claudeCode", "codexCli", "qoderCli", "qoderIde", "ccSwitch",
+                 "unknownCandidate", "codexIde", "codexDesktop", "claudeCli", "claudeIde", "claudeDesktop"]
+    for number, name in enumerate(old_names):
+        assert AgentType(number).value == name
+        assert AgentType(name).value == name
+    assert AgentType(11) == AgentType.DeepSeekHarness
+    assert AgentType("DeepSeekHarness").value == "deepseekHarness"
+    with pytest.raises(ValueError):
+        AgentType(12)
+
+
+def test_dsh_heartbeat_extension_does_not_require_database_migration():
+    from copy import deepcopy
+    from controlserver.models import HeartbeatV2Request
+    from controlserver.validation import validate_heartbeat
+    fixture = json.loads((Path(__file__).parent / "fixtures/dotnet-v0.1.19.json").read_text())
+    # The existing v2 fixture continues to validate without a DSH extension.
+    previous = HeartbeatV2Request.model_validate(fixture["heartbeat"])
+    validate_heartbeat(previous, 2)
+    payload = deepcopy(fixture["heartbeat"])
+    payload["agents"][0].update(agentType="deepseekHarness", displayName="DSH", version="0.2.1-alpha.5")
+    payload["endpoints"][0].update(agentFamily="deepseekHarness",
+        providerId="dsh:messages:deepseek:" + "a" * 64, wireApi="anthropicMessages")
+    current = HeartbeatV2Request.model_validate(payload)
+    validate_heartbeat(current, 2)
+    wire = current.model_dump(mode="json")
+    assert wire["agents"][0]["agentType"] == "deepseekHarness"
+    assert wire["endpoints"][0]["agentFamily"] == "deepseekHarness"

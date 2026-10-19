@@ -1,0 +1,21 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+  <PropertyGroup>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.2.2</ProductVersion>
+    <OutputName>EndpointAIDLP-Client-$(ProductVersion)-go-win-x64</OutputName>
+    <OutputType>Package</OutputType>
+    <Platform>x64</Platform>
+    <ServicePublishDir Condition="'$(ServicePublishDir)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\go-client\$(ProductVersion)\windows-amd64\service</ServicePublishDir>
+    <InstallerActionsDir Condition="'$(InstallerActionsDir)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\go-client\$(ProductVersion)\windows-amd64\installer-actions</InstallerActionsDir>
+    <ProductionInputDir Condition="'$(ProductionInputDir)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\private-msi-input</ProductionInputDir>
+    <DefineConstants>InstallerActionsDir=$(InstallerActionsDir);ProductVersion=$(ProductVersion);ServicePublishDir=$(ServicePublishDir);ProductionInputDir=$(ProductionInputDir);EndpointAIDLPLogMarker=EndpointAIDLP-Windows-Go-$(ProductVersion)</DefineConstants>
+  </PropertyGroup>
+  <Target Name="RequireCandidatePayload" BeforeTargets="Build">
+    <Error Condition="!Exists('$(ProductionInputDir)\client-credentials.json')" Text="Provide private ProductionInputDir using the existing production packaging workflow." />
+    <Error Condition="!Exists('$(ServicePublishDir)\Sf.EndpointAI.Client.Service.exe')" Text="Build the Go candidate payload first." />
+    <Error Condition="!Exists('$(InstallerActionsDir)\Sf.EndpointAI.InstallerActions.exe')" Text="Build the Go Windows installer helper first." />
+  </Target>
+  <ItemGroup>
+    <Compile Include="..\Sf.EndpointAI.Setup\Package.wxs" Link="Package.wxs" />
+    <PackageReference Include="WixToolset.Util.wixext" />
+  </ItemGroup>
+</Project>

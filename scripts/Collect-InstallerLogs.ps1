@@ -42,7 +42,7 @@ try {
       if ($candidate.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
       $msi = $candidate.FullName
       # Do not export logs of other products; match our marker or original package name.
-      if (-not (Select-String -LiteralPath $msi -Pattern 'EndpointAIDLPLogMarker\s*=\s*EndpointAIDLP-Windows-0\.1\.22\s*$', 'EndpointAIDLP-Client-0\.1\.22-win-x64\.msi' -Quiet -ErrorAction SilentlyContinue)) { continue }
+      if (-not (Select-String -LiteralPath $msi -Pattern 'EndpointAIDLPLogMarker\s*=\s*EndpointAIDLP-Windows-(Go-)?[0-9]+\.[0-9]+\.[0-9]+\s*$', 'EndpointAIDLP-Client-[0-9]+\.[0-9]+\.[0-9]+-(go-)?win-x64\.msi' -Quiet -ErrorAction SilentlyContinue)) { continue }
       $count++
       # Keep action/rollback/error evidence. Exclude property dumps, command lines and
       # arbitrary custom-action output; a raw verbose log is deliberately not exported.

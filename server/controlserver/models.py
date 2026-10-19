@@ -45,6 +45,7 @@ class AgentType(WireEnum):
     ClaudeCli = "claudeCli"
     ClaudeIde = "claudeIde"
     ClaudeDesktop = "claudeDesktop"
+    DeepSeekHarness = "deepseekHarness"
 
 class InstallMethod(WireEnum):
     Unknown = "unknown"

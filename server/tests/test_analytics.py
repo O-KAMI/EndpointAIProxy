@@ -168,3 +168,17 @@ def test_analytics_http_auth_pagination_and_counts(mysql_store):
     assert client.get("/admin/v1/analytics?scope=invalid", headers=auth).status_code == 400
     assert client.get("/admin/v1/analytics?providerMode=observed", headers=auth).status_code == 400
     assert client.get("/admin/v1/analytics/devices?skip=invalid", headers=auth).status_code == 400
+
+
+def test_dsh_has_independent_family_and_never_observed_is_not_success():
+    from controlserver.analytics import agent_family, family_name
+    assert agent_family("deepseekHarness") == "DSH"
+    assert family_name("deepseekHarness") == "DSH"
+    row = terminal(state="neverObserved")
+    row["agents"][0]["agentType"] = "deepseekHarness"
+    row["endpoints"][0]["agentFamily"] = "deepseekHarness"
+    row["activity"] = []
+    data = build([row], POLICY, NOW)
+    assert data["agents"][0]["label"] == "DSH"
+    assert data["anomalyDevices"] == 0
+    assert data["unknownDevices"] == 1

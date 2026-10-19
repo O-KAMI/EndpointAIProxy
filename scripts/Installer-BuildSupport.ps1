@@ -26,7 +26,7 @@ function Assert-WindowsGuiExecutable([string]$Path) {
   }
 }
 
-function Assert-ProductionMsi([string]$Path) {
+function Assert-ProductionMsi([string]$Path, [string]$ExpectedVersion = '0.1.22') {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'Expected MSI output missing.' }
   $installer = New-Object -ComObject WindowsInstaller.Installer
   $database = $installer.OpenDatabase($Path,0)
@@ -40,7 +40,7 @@ function Assert-ProductionMsi([string]$Path) {
     } finally { $view.Close() }
   }
   try {
-    if ((Read-Cell "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductVersion'") -ne '0.1.22') { throw 'MSI version mismatch.' }
+    if ((Read-Cell "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductVersion'") -ne $ExpectedVersion) { throw 'MSI version mismatch.' }
     if ((Read-Cell "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='MsiLogging'") -ne 'voicewarmup!') { throw 'MSI automatic logging missing.' }
     if ((Read-Cell "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='UpgradeCode'").ToUpperInvariant() -ne '{643CFDA1-3A12-4C57-BD65-5F6106CBAB90}') { throw 'MSI upgrade code mismatch.' }
     if ($database.SummaryInformation(0).Property(7) -notlike 'x64;*') { throw 'MSI architecture mismatch.' }

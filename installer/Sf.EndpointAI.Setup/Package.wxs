@@ -1,5 +1,8 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <?ifndef EndpointAIDLPLogMarker?>
+  <?define EndpointAIDLPLogMarker="EndpointAIDLP-Windows-0.1.22"?>
+  <?endif?>
   <Package Name="顺丰终端 AI 请求代理"
            Manufacturer="SF"
            Version="$(var.ProductVersion)"
@@ -8,10 +11,17 @@
            Codepage="936"
            InstallerVersion="500">
     <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更高版本的顺丰终端 AI 请求代理。" />
+    <Upgrade Id="643CFDA1-3A12-4C57-BD65-5F6106CBAB90">
+      <UpgradeVersion Minimum="$(var.ProductVersion)" Maximum="$(var.ProductVersion)"
+                      IncludeMinimum="yes" IncludeMaximum="yes" OnlyDetect="yes"
+                      Property="SF_SAME_VERSION_PRODUCTS" />
+    </Upgrade>
+    <Launch Condition="Installed OR NOT SF_SAME_VERSION_PRODUCTS"
+            Message="已安装同版本的其他构建，请使用原安装包修复或发布更高版本。" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="low" />
     <Property Id="MSIDISABLERMRESTART" Value="1" />
     <Property Id="MsiLogging" Value="voicewarmup!" />
-    <Property Id="EndpointAIDLPLogMarker" Value="EndpointAIDLP-Windows-0.1.22" />
+    <Property Id="EndpointAIDLPLogMarker" Value="$(var.EndpointAIDLPLogMarker)" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="SfProgramDirectory" Name="SF">
@@ -135,13 +145,13 @@
                   Return="check" />
 
     <InstallExecuteSequence>
-      <Custom Action="PreflightLegacy" Before="InstallValidate" Condition="NOT REMOVE~=&quot;ALL&quot;" />
-      <Custom Action="SnapshotConfiguration" After="InstallValidate" Condition="NOT REMOVE~=&quot;ALL&quot;" />
-      <Custom Action="RollbackConfiguration" Before="QuiesceLegacy" Condition="NOT REMOVE~=&quot;ALL&quot;" />
-      <Custom Action="QuiesceLegacy" Before="RemoveExistingProducts" Condition="NOT REMOVE~=&quot;ALL&quot;" />
-      <Custom Action="ProvisionProductionControl" After="InstallServices" Condition="NOT REMOVE~=&quot;ALL&quot;" />
-      <Custom Action="VerifyInstalledService" After="StartServices" Condition="NOT REMOVE~=&quot;ALL&quot;" />
-      <Custom Action="CommitConfiguration" After="VerifyInstalledService" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="PreflightLegacy" Before="InstallValidate" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
+      <Custom Action="SnapshotConfiguration" After="InstallValidate" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
+      <Custom Action="RollbackConfiguration" Before="QuiesceLegacy" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
+      <Custom Action="QuiesceLegacy" Before="RemoveExistingProducts" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
+      <Custom Action="ProvisionProductionControl" After="InstallServices" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
+      <Custom Action="VerifyInstalledService" After="StartServices" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
+      <Custom Action="CommitConfiguration" After="VerifyInstalledService" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
       <Custom Action="DetachManagedConfigurations"
               After="StopServices"
               Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />

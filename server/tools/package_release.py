@@ -1,11 +1,49 @@
 """Build a source-only release from an explicit allowlist; never package actual credentials."""
 import argparse
+from email.parser import BytesParser
 import hashlib
 import json
 from pathlib import Path
+import re
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+RELEASE_VERSION = "0.1.24"
+
+
+def offline_wheels():
+    """Reject an incomplete or mismatched offline lock before producing a release."""
+    normalize = lambda value: re.sub(r"[-_.]+", "-", value).lower()
+    required = {}
+    for line in (ROOT / "requirements.txt").read_text().splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        name, version = line.split("==", 1)
+        required[normalize(name)] = version
+    wheels = []
+    for architecture in ("x86_64", "aarch64"):
+        candidates = sorted((ROOT / "deployment/wheelhouse" / architecture).glob("*.whl"))
+        installed = {}
+        for path in candidates:
+            if path.is_symlink():
+                raise RuntimeError("Linked offline dependency")
+            with zipfile.ZipFile(path) as archive:
+                metadata_names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
+                wheel_names = [n for n in archive.namelist() if n.endswith(".dist-info/WHEEL")]
+                if len(metadata_names) != 1 or len(wheel_names) != 1 or archive.testzip() is not None:
+                    raise RuntimeError("Invalid offline wheel")
+                metadata = BytesParser().parsebytes(archive.read(metadata_names[0]))
+                tags = BytesParser().parsebytes(archive.read(wheel_names[0])).get_all("Tag", [])
+            name = normalize(metadata["Name"])
+            if name in installed or required.get(name) != metadata["Version"]:
+                raise RuntimeError("Offline dependencies do not match requirements.txt")
+            if not any(tag.endswith("-any") or ("manylinux" in tag and tag.endswith("_" + architecture)) for tag in tags):
+                raise RuntimeError("Offline wheel has the wrong platform")
+            installed[name] = metadata["Version"]
+        if installed != required:
+            raise RuntimeError("Incomplete offline dependencies for " + architecture)
+        wheels.extend(candidates)
+    return wheels
 
 
 def release_files():
@@ -31,32 +69,38 @@ def release_files():
     return paths
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--update", action="store_true", help="Include locked Linux offline wheels and per-file manifest")
-    args = parser.parse_args()
-    output = Path(args.output)
+def build_release(output, update=False):
+    output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     files = release_files()
-    if args.update:
-        files += sorted((ROOT / "deployment/wheelhouse").glob("*/*.whl"))
+    if update:
+        files += offline_wheels()
         if any(p.is_symlink() for p in files):
             raise RuntimeError("Linked release file")
     manifest = {}
     with output.open("xb") as target, zipfile.ZipFile(target, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in files:
             name = str(path.relative_to(ROOT))
-            if not args.update:
-                name = "EndpointAIDLP-Server-0.1.23/" + name
+            if not update:
+                name = "EndpointAIDLP-Server-" + RELEASE_VERSION + "/" + name
             archive.write(path, arcname=name)
             manifest[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-        if args.update:
+        if update:
             archive.writestr("manifest.json", json.dumps(manifest, sort_keys=True, indent=2))
     with output.open("rb") as file:
         digest = hashlib.file_digest(file,"sha256").hexdigest()
     output.with_suffix(output.suffix + ".sha256").write_text(f"{digest}  {output.name}\n")
-    print(f"Packaged {len(files)} source files: {output}")
+    return len(files), digest
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--update", action="store_true", help="Include locked Linux offline wheels and per-file manifest")
+    args = parser.parse_args()
+    count, digest = build_release(args.output, args.update)
+    output = Path(args.output)
+    print(f"Packaged {count} source files: {output}")
     print("SHA256: " + digest)
 
 

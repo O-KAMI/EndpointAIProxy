@@ -4,6 +4,7 @@ import logging.handlers
 import sys
 import re
 import hashlib
+import time
 from uuid import uuid4
 from flask import Flask, g, request
 from werkzeug.exceptions import HTTPException
@@ -11,6 +12,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from config import Config
 from controlserver.database import ControlStore
 from controlserver.http import response
+from controlserver.observability import safe_exception
 from controlserver.validation import ApiProblem, seed_policy
 
 
@@ -46,8 +48,8 @@ def create_app(config=None, store=None, check_database=True):
     if check_database:
         try:
             app.extensions["control_store"].check_schema()
-        except Exception:
-            logger.exception("Database schema validation failed; service not started")
+        except Exception as exc:
+            logger.error("Database schema validation failed; service not started stage=startup errorClass=DATABASE_SCHEMA_INVALID errorType=%s errorNumber=%s sqlState=%s safeFrames=%s", *safe_exception(exc))
             raise
 
     from controlserver.routes_client import client_bp
@@ -62,6 +64,9 @@ def create_app(config=None, store=None, check_database=True):
     @app.before_request
     def trace():
         g.trace_id = str(uuid4())
+        g.request_started = time.perf_counter()
+        g.control_envelope_id = request.environ.get("endpointai.control_envelope_id", "")
+        g.control_stage = "business" if g.control_envelope_id else "request"
         # Legacy in-process test compatibility; production 0.1.21 Config disables HTTPS.
         # Network ingress is enforced by install_transport, independent of proxy headers.
         command_creation = request.method == "POST" and re.fullmatch(r"/admin/v1/devices/[^/]+/commands", request.path)
@@ -75,8 +80,13 @@ def create_app(config=None, store=None, check_database=True):
         result.headers["X-Request-ID"] = g.get("trace_id", "")
         if not request.path.startswith("/health"):
             # Log matched route templates, not attacker-supplied paths or query strings.
-            logger.info("%s %s %s requestId=%s", result.status_code, request.method,
-                        request.url_rule.rule if request.url_rule else "<unmatched>", g.get("trace_id"))
+            logger.info("%s %s %s requestId=%s controlEnvelopeId=%s businessRequestId=%s stage=%s durationMilliseconds=%.3f",
+                        result.status_code, request.method,
+                        request.url_rule.rule if request.url_rule else "<unmatched>", g.get("trace_id", ""),
+                        g.get("control_envelope_id", ""), g.get("business_request_id", "") or
+                        (g.get("trace_id", "") if g.get("control_stage") == "business" else ""),
+                        g.get("control_stage", "request"),
+                        max(0, (time.perf_counter() - g.get("request_started", time.perf_counter())) * 1000))
         return result
 
     @app.errorhandler(ApiProblem)
@@ -91,11 +101,13 @@ def create_app(config=None, store=None, check_database=True):
 
     @app.errorhandler(Exception)
     def unexpected(exc):
-        logger.exception("Unhandled request exception requestId=%s", g.get("trace_id"))
+        # Exception messages/stack locals can contain credentials or request bodies.
+        logger.error("Unhandled request exception requestId=%s stage=%s errorClass=INTERNAL_ERROR errorType=%s errorNumber=%s sqlState=%s safeFrames=%s",
+                     g.get("trace_id", ""), g.get("control_stage", "request"), *safe_exception(exc))
         return response({"error": {"code": "INTERNAL_ERROR", "message": "An internal error occurred.",
                                    "traceId": g.get("trace_id")}}, 500)
 
-    logger.info("EndpointAIDLP 0.1.23 initialized environment=%s", cfg.APP_ENV)
+    logger.info("EndpointAIDLP 0.1.24 initialized environment=%s", cfg.APP_ENV)
     return app
 
 

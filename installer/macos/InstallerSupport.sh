@@ -3,11 +3,17 @@
 set -euo pipefail
 umask 077
 SF_VERSION=0.1.22
+SF_IMPLEMENTATION=dotnet
 SF_DATA='/Library/Application Support/SF/EndpointAIProxy'
 SF_CONFIG=/private/etc/sf-endpointai-proxy.conf
 SF_PLIST=/Library/LaunchDaemons/com.sf.endpointai.proxy.plist
 SF_SHARE=/usr/local/share/sf-endpointai-proxy
 SF_BIN="$SF_DATA/bin"
+sf_client_executable() {
+  local bundled="$SF_BIN/EndpointAIProxy.app/Contents/MacOS/Sf.EndpointAI.Client.Service"
+  if [[ -f "$bundled" && ! -L "$bundled" ]]; then print -r -- "$bundled"
+  else print -r -- "$SF_BIN/Sf.EndpointAI.Client.Service"; fi
+}
 SF_LOGS="$SF_DATA/InstallerLogs"
 SF_BACKUPS="$SF_DATA/InstallerRollback"
 SF_SESSION="$SF_BACKUPS/current"
@@ -16,6 +22,7 @@ SF_JOB=system/com.sf.endpointai.proxy
 SF_STAGE=begin
 SF_LOG=''
 SF_ID=''
+SF_VALIDATION_COMMITTED=0
 SF_STOP_ATTEMPTED=0
 SF_BACKUP_READY=0
 SF_OWN_LOCK=0
@@ -108,7 +115,11 @@ sf_validate_credentials() {
   local credentials="$1" length
   [[ -f "$credentials" && ! -L "$credentials" ]] || return 1
   SF_ORIGIN=$(/usr/bin/plutil -extract origin raw -o - "$credentials" 2>/dev/null) || return 1
-  [[ "$SF_ORIGIN" == http://control.example.invalid:8080 ]] || return 1
+  if [[ "$SF_IMPLEMENTATION" == go ]]; then
+    [[ "$SF_ORIGIN" =~ '^http://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[A-Fa-f0-9:]+\])(:[0-9]{1,5})?/?$' ]] || return 1
+  else
+    [[ "$SF_ORIGIN" == http://control.example.invalid:8080 ]] || return 1
+  fi
   SF_TOKEN=$(/usr/bin/plutil -extract clientToken raw -o - "$credentials" 2>/dev/null) || return 1
   SF_HMAC=$(/usr/bin/plutil -extract policyHmacKey raw -o - "$credentials" 2>/dev/null) || return 1
   SF_AES=$(/usr/bin/plutil -extract transportKey raw -o - "$credentials" 2>/dev/null) || return 1
@@ -159,6 +170,66 @@ sf_snapshot() {
   : > "$SF_SESSION/backup-ready" || return 1
   SF_BACKUP_READY=1
   sf_log saved
+}
+sf_snapshot_stopped_state() {
+  SF_STAGE=backup
+  local name
+  if [[ -f "$SF_DATA/state/client.db" ]]; then
+    /usr/bin/sqlite3 -readonly "$SF_DATA/state/client.db" 'SELECT device_id FROM client_identity WHERE singleton_id=1;' > "$SF_SESSION/device-id" || return 1
+    /bin/chmod 0600 "$SF_SESSION/device-id" || return 1
+  fi
+  for name in state config-backups; do
+    sf_safe_path "$SF_DATA/$name" || return 1
+    if [[ -d "$SF_DATA/$name" ]]; then
+      [[ -z "$(/usr/bin/find "$SF_DATA/$name" -type l -print -quit)" ]] || return 1
+      sf_snapshot_one "$name" "$SF_DATA/$name" || return 1
+    fi
+  done
+  : > "$SF_SESSION/state-backup-ready" || return 1
+}
+sf_verify_state_before_start() {
+  [[ -f "$SF_SESSION/state-backup-ready" ]] || return 1
+  local saved rel live
+  if [[ -d "$SF_SESSION/state" ]]; then
+    while IFS= read -r -d $'\0' saved; do
+      rel="${saved#$SF_SESSION/state/}"; live="$SF_DATA/state/$rel"
+      [[ "$rel" == *-shm ]] && continue
+      sf_safe_path "$live" && /usr/bin/cmp -s "$saved" "$live" || return 1
+    done < <(/usr/bin/find "$SF_SESSION/state" -type f -print0)
+  fi
+}
+sf_begin_validation() {
+  [[ "$SF_IMPLEMENTATION" == go ]] || return 0
+  sf_safe_path "$SF_DATA/.installation-pending" || return 1
+  [[ ! -e "$SF_DATA/.installation-pending" ]] || return 1
+  print -rn -- "$SF_ID" > "$SF_DATA/.installation-pending" || return 1
+  /bin/chmod 0600 "$SF_DATA/.installation-pending" || return 1
+}
+sf_commit_validation() {
+  [[ -f "$SF_DATA/.installation-pending" ]] || return 0
+  sf_safe_path "$SF_DATA/.installation-pending" || return 1
+  [[ "$(<"$SF_DATA/.installation-pending")" == "$SF_ID" ]] || return 1
+  /bin/rm "$SF_DATA/.installation-pending"
+}
+sf_verify_preserved_identity() {
+  [[ -f "$SF_SESSION/device-id" ]] || return 0
+  local expected actual
+  expected="$(<"$SF_SESSION/device-id")"
+  actual=$(/usr/bin/curl --silent --fail --max-time 2 --noproxy '*' http://127.0.0.1:18080/healthz | /usr/bin/plutil -extract deviceId raw -o - - 2>/dev/null) || return 1
+  [[ -n "$expected" && "$actual" == "$expected" ]]
+}
+sf_restore_stopped_state() {
+  [[ -f "$SF_SESSION/state-backup-ready" ]] || return 0
+  local name live failed
+  for name in state config-backups; do
+    [[ -f "$SF_SESSION/$name.present" ]] || continue
+    live="$SF_DATA/$name"; sf_safe_path "$live" || return 1
+    if [[ -e "$live" ]]; then
+      failed="$SF_SESSION/failed-$name-$(/usr/bin/uuidgen)"
+      /bin/mv "$live" "$failed" || return 1
+    fi
+    /bin/cp -pR "$SF_SESSION/$name" "$live" || return 1
+  done
 }
 sf_pid() {
   /bin/launchctl print "$SF_JOB" 2>/dev/null | /usr/bin/awk '/^[[:space:]]*pid = [0-9]+$/ {print $3; exit}'
@@ -240,7 +311,7 @@ sf_ready() {
     pid=$(sf_pid 2>/dev/null || true)
     if [[ "$pid" =~ '^[0-9]+$' ]]; then
       executable=$(/bin/ps -ww -p "$pid" -o comm= 2>/dev/null || true)
-      if [[ "$executable" == "$SF_BIN/Sf.EndpointAI.Client.Service" ]]; then
+      if [[ "$executable" == "$(sf_client_executable)" ]]; then
         health=$(/usr/bin/curl --silent --fail --max-time 2 --noproxy '*' http://127.0.0.1:18080/healthz 2>/dev/null || true)
         version=$(print -rn -- "$health" | /usr/bin/plutil -extract clientVersion raw -o - - 2>/dev/null || true)
         if [[ "$version" == "$SF_VERSION" && "$previous" == "$pid" ]]; then
@@ -274,6 +345,8 @@ sf_restore_one() {
 sf_restore() {
   [[ -f "$SF_SESSION/backup-ready" ]] || return 1
   sf_stop || return 1
+  sf_restore_stopped_state || return 1
+  sf_commit_validation || return 1
   SF_STAGE=restore_files
   sf_restore_one bin "$SF_BIN" || return 1
   sf_restore_one share "$SF_SHARE" || return 1
@@ -293,8 +366,9 @@ sf_restore() {
       pid=$(sf_pid 2>/dev/null || true)
       executable=''
       [[ "$pid" =~ '^[0-9]+$' ]] && executable=$(/bin/ps -ww -p "$pid" -o comm= 2>/dev/null || true)
-      if [[ "$executable" == "$SF_BIN/Sf.EndpointAI.Client.Service" ]] && \
+      if [[ "$executable" == "$(sf_client_executable)" ]] && \
         /usr/bin/curl --silent --fail --max-time 2 --noproxy '*' http://127.0.0.1:18080/healthz >/dev/null 2>&1; then
+        sf_verify_preserved_identity || return 1
         SF_STAGE=rollback; sf_log old_service_ready; return 0
       fi
       /bin/sleep 1
@@ -322,7 +396,9 @@ sf_failed_exit() {
   (( code != 0 )) || return 0
   set +e
   sf_log failed "$code"
-  if (( SF_BACKUP_READY && SF_STOP_ATTEMPTED )); then
+  if (( SF_VALIDATION_COMMITTED )); then
+    SF_STAGE=complete; sf_log recovery_required 1
+  elif (( SF_BACKUP_READY && SF_STOP_ATTEMPTED )); then
     if sf_restore; then sf_clear_session; else SF_STAGE=rollback; sf_log recovery_required 1; fi
   elif (( SF_OWN_LOCK )); then
     if [[ -f "$SF_SESSION/id" && "$(<"$SF_SESSION/id")" == "$SF_ID" ]]; then sf_clear_session

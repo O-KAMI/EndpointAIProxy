@@ -447,12 +447,19 @@ class ControlStore:
 
     def update_command(self, update):
         with self.transaction() as cur:
-            # Lock/select also treats repeated identical executing reports as accepted.
-            cur.execute("""SELECT status FROM remote_commands WHERE command_id=%s AND device_id=%s FOR UPDATE""",
+            # Retries use a new transport envelope after a lost response. Accept the
+            # same completed result without replacing the first completion time.
+            cur.execute("""SELECT status,result_code,result_summary FROM remote_commands
+                WHERE command_id=%s AND device_id=%s FOR UPDATE""",
                         (str(update.commandId), str(update.deviceId)))
             row = cur.fetchone()
-            if not row or row["status"] in ("succeeded", "failed", "expired", "cancelled"):
+            if not row:
                 return False
+            if row["status"] in ("succeeded", "failed", "expired", "cancelled"):
+                return (row["status"] in ("succeeded", "failed")
+                        and row["status"] == update.status.value
+                        and row["result_code"] == update.resultCode
+                        and row["result_summary"] == update.resultSummary)
             cur.execute("""UPDATE remote_commands SET status=%s,
                 started_at_utc=IF(%s='executing',COALESCE(started_at_utc,%s),started_at_utc),
                 completed_at_utc=IF(%s IN ('succeeded','failed'),%s,completed_at_utc),

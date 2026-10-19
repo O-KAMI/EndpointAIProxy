@@ -11,6 +11,7 @@ main() {
   sf_step sf_snapshot || return 1
   SF_STOP_ATTEMPTED=1
   sf_step sf_stop || return 1
+  sf_step sf_snapshot_stopped_state || return 1
   SF_STAGE=payload
   sf_log prepared || return 1
 }

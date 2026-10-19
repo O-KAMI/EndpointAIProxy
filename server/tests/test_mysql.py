@@ -146,9 +146,35 @@ def test_commands_concurrent_creation_and_lifecycle(mysql_store):
     update.status = RemoteCommandStatus.Succeeded
     update = RemoteCommandStatusUpdate.model_validate(update.model_dump())
     assert mysql_store.update_command(update)
+    completed = mysql_store.commands(device)[0]["completedAtUtc"]
+    update.observedAtUtc = utcnow() + timedelta(seconds=10)
+    assert mysql_store.update_command(update)
+    assert mysql_store.commands(device)[0]["completedAtUtc"] == completed
+    update.resultCode = "CONFLICTING_RESULT"
     assert not mysql_store.update_command(update)
     assert mysql_store.lease(device) is None
     assert len(mysql_store.audits(device)) == 1
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_terminal_receipt_retries_are_idempotent_and_identity_bound(mysql_store, status):
+    h = heartbeat(mysql_store)
+    command = mysql_store.create_command(h.device.deviceId, command_request(), "test")
+    mysql_store.lease(h.device.deviceId)
+    update = RemoteCommandStatusUpdate(schemaVersion=1, deviceId=h.device.deviceId,
+        commandId=command["commandId"], status=status, observedAtUtc=utcnow(),
+        resultCode="SYNTHETIC_RESULT", resultSummary="Synthetic result")
+    assert mysql_store.update_command(update)
+    original = mysql_store.commands(h.device.deviceId)[0]
+    duplicate = update.model_copy(update={"observedAtUtc": utcnow() + timedelta(minutes=1)})
+    assert mysql_store.update_command(duplicate)
+    assert mysql_store.commands(h.device.deviceId)[0] == original
+    for changes in ({"deviceId": uuid4()}, {"commandId": uuid4()},
+                    {"status": RemoteCommandStatus.Executing},
+                    {"status": RemoteCommandStatus.Failed if status == "succeeded" else RemoteCommandStatus.Succeeded},
+                    {"resultCode": None}, {"resultSummary": "Different result"}):
+        assert not mysql_store.update_command(update.model_copy(update=changes))
+        assert mysql_store.commands(h.device.deviceId)[0] == original
 
 
 def test_pending_expiry_cancel_and_audit(mysql_store):
@@ -192,7 +218,11 @@ def test_http_v2_full_flow_device_binding_and_events(mysql_store):
     update = dict(schemaVersion=1,deviceId=device,commandId=created.json["commandId"],status="succeeded",
                   observedAtUtc=FIXTURE["heartbeat"]["observedAtUtc"],resultCode="OK",resultSummary="Synthetic test")
     assert client.post(f"/api/v2/commands/{created.json['commandId']}/status",json=update,headers=token).status_code == 202
-    assert client.post(f"/api/v2/commands/{created.json['commandId']}/status",json=update,headers=token).status_code == 409
+    completed = mysql_store.commands(device)[0]["completedAtUtc"]
+    assert client.post(f"/api/v2/commands/{created.json['commandId']}/status",json=update,headers=token).status_code == 202
+    assert mysql_store.commands(device)[0]["completedAtUtc"] == completed
+    conflicting = dict(update, resultCode="CONFLICTING_RESULT")
+    assert client.post(f"/api/v2/commands/{created.json['commandId']}/status",json=conflicting,headers=token).status_code == 409
     batch = dict(schemaVersion=1,batchId=str(uuid4()),deviceId=device,events=[
         dict(eventId=str(uuid4()),occurredAtUtc=FIXTURE["heartbeat"]["observedAtUtc"],
              severity="info",type="test",code="TEST",summary="测试")])
