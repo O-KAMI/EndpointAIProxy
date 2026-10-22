@@ -82,3 +82,7 @@ Windows Installer COM 的 Execute/Close 返回值显式丢弃，避免空返回�
 Codex 排除和网关 HMAC 的删除服务键回归使用合成值，不导出真实密钥。
 0.1.22 停服快照与恢复演练已通过：26 个备份文件逐项摘要一致，旧二进制与 Codex 配置未变，服务恢复健康。
 这不是 MSI 故障回滚通过证明。用户确认的 Codex model 字段调整已保留并单独建立保护基线。
+
+原生 SYSTEM 合成 DPAPI 已通过：用户 .NET→SYSTEM Go、用户 Go→SYSTEM .NET、
+SYSTEM .NET→用户 Go、SYSTEM Go→用户 .NET。单次 SYSTEM 计划任务退出码为 0，任务已清理。
+构建失败报告仅补充源文件名和行号，不记录凭据或原始异常正文。

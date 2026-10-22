@@ -117,7 +117,7 @@ exit 1603
   Write-Host "Candidate MSI: $target"
   Write-Host "Signature: $signatureStatus. No installation was performed."
 } catch {
-  if ($reportPath) { Write-BuildJson $reportPath @{ status='failed'; stage=$stage; errorType=$_.Exception.GetType().Name; installationPerformed=$false } }
+  if ($reportPath) { Write-BuildJson $reportPath @{ status='failed'; stage=$stage; errorType=$_.Exception.GetType().Name; failureLine=$_.InvocationInfo.ScriptLineNumber; failureSource=[IO.Path]::GetFileName($_.InvocationInfo.ScriptName); installationPerformed=$false } }
   [Console]::Error.WriteLine(('Windows Go build failed at ' + $stage + '. Credential values and raw exceptions are withheld.'))
   $hints=@{ preflight='Check the external credential path/format, Windows x64, Go 1.27.x, .NET 10 SDK and complete signing arguments.'; 'go-tests'='Inspect the test/vet output above; no installation was attempted.'; 'go-payload'='Inspect the Go compilation output above.'; 'wix-msi'='Check .NET SDK and first-build NuGet access for WiX 6.0.2.'; 'validate-msi'='Inspect MSI metadata and ensure a fresh output directory is selected.'; 'sign-payload'='Check the CurrentUser signing certificate/private key, SignTool and timestamp access.'; 'sign-msi'='Check SignTool verification and timestamp access; unsigned fallback is disabled.' }
   if ($hints.ContainsKey($stage)) { [Console]::Error.WriteLine($hints[$stage]) }
