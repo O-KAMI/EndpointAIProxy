@@ -101,6 +101,22 @@ func TestCodexExclusionPreservesCCSwitchCodexProviders(t *testing.T) {
 			t.Fatal("excluded route created")
 		}
 	}
+	// Installer maintenance detaches owned routes without the runtime exclusion flag.
+	m.ExcludeCodex = false
+	if _, err := m.DetachAll(context.Background(), []Profile{p}); err != nil {
+		t.Fatal("unmanaged Codex must not block uninstall", err)
+	}
+	if err := db.QueryRow(`SELECT settings_config FROM providers WHERE app_type='codex'`).Scan(&saved); err != nil || saved != settings {
+		t.Fatal("detach modified unmanaged Codex provider", err)
+	}
+	live, _ = os.ReadFile(configPath(p, "codex"))
+	if string(live) != original {
+		t.Fatal("detach modified unmanaged live Codex")
+	}
+	live, _ = os.ReadFile(configPath(p, "claude"))
+	if !strings.Contains(string(live), "https://upstream.example") {
+		t.Fatal("owned Claude configuration was not restored")
+	}
 }
 func TestManagerAttachIdempotentDetachPreservesOtherUserEdits(t *testing.T) {
 	m, p := fixtureManager(t)

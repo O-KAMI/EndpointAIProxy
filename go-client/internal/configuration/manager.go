@@ -413,6 +413,9 @@ func (m *Manager) ccApp(ctx context.Context, p Profile, path, app string, cc CCI
 			}
 			return []Result{blocked}, e
 		}
+		if detach && d.before == nil {
+			continue
+		}
 		t, e := ccTransform(app, v.Settings, d.target, d.bypass)
 		if e != nil {
 			return []Result{blocked}, e
@@ -434,6 +437,9 @@ func (m *Manager) ccApp(ctx context.Context, p Profile, path, app string, cc CCI
 			item.ProviderID = endpointIdentity(v)
 			item.ErrorCode = errorCode(e)
 			skipped = append(skipped, item)
+			continue
+		}
+		if detach && d.before == nil {
 			continue
 		}
 		r := makeResult(p, path, endpointIdentity(v), 4, d)
