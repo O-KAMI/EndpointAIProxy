@@ -71,3 +71,26 @@ func controlOverride(line string) bool {
 	}
 	return false
 }
+
+// Major upgrades can delete the service registry key before recreating it.
+// Preserve non-control settings from the snapshot; explicit current settings win.
+func serviceEnvironment(previous, current []string) []string {
+	out := []string{}
+	indexes := map[string]int{}
+	for _, source := range [][]string{previous, current} {
+		for _, line := range source {
+			if controlOverride(line) {
+				continue
+			}
+			name, _, _ := strings.Cut(line, "=")
+			name = strings.ToUpper(name)
+			if index, exists := indexes[name]; exists {
+				out[index] = line
+			} else {
+				indexes[name] = len(out)
+				out = append(out, line)
+			}
+		}
+	}
+	return out
+}

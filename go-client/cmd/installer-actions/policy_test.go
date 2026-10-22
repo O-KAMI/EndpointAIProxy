@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -34,5 +35,18 @@ func TestOrigins(t *testing.T) {
 		if validOrigin(raw) {
 			t.Fatalf("unsafe origin accepted: %s", raw)
 		}
+	}
+}
+
+func TestServiceEnvironmentSurvivesServiceRecreation(t *testing.T) {
+	previous := []string{"SF_PROXY_EXCLUDE_CODEX=true", "SF_PROXY_GATEWAY_HMAC_KEY=synthetic-key", "SF_PROXY_CONTROL_TOKEN=stale", "sf_proxy_allow_insecure_control_server=true"}
+	want := []string{"SF_PROXY_EXCLUDE_CODEX=true", "SF_PROXY_GATEWAY_HMAC_KEY=synthetic-key"}
+	if got := serviceEnvironment(previous, nil); !reflect.DeepEqual(got, want) {
+		t.Fatal("deleted service key lost non-control settings or retained control overrides")
+	}
+	current := []string{"sf_proxy_exclude_codex=false", "SF_PROXY_CONTROL_ORIGIN=http://stale.invalid", "OTHER=value"}
+	want = []string{"sf_proxy_exclude_codex=false", "SF_PROXY_GATEWAY_HMAC_KEY=synthetic-key", "OTHER=value"}
+	if got := serviceEnvironment(previous, current); !reflect.DeepEqual(got, want) {
+		t.Fatal("explicit current settings must win case-insensitively without losing unrelated snapshot settings")
 	}
 }

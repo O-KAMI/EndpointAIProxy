@@ -535,7 +535,8 @@ func (a *action) quiesce() error {
 }
 func (a *action) apply() error {
 	a.stage = "validate_credentials"
-	if _, e := a.readSnapshot(); e != nil {
+	previous, e := a.readSnapshot()
+	if e != nil {
 		return e
 	}
 	path := filepath.Join(a.dataRoot, "client-credentials.json")
@@ -590,12 +591,7 @@ func (a *action) apply() error {
 	if e != nil && !errors.Is(e, registry.ErrNotExist) {
 		return e
 	}
-	retained := []string{}
-	for _, line := range env {
-		if !controlOverride(line) {
-			retained = append(retained, line)
-		}
-	}
+	retained := serviceEnvironment(previous.Environment, env)
 	if len(retained) > 0 {
 		e = service.SetStringsValue("Environment", retained)
 	} else {
