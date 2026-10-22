@@ -1,3 +1,16 @@
+function Test-PrivateBuildDacl($Actual, $Desired) {
+  if (-not $Actual.AreAccessRulesProtected) { return $false }
+  $actualDacl=[Security.AccessControl.RawSecurityDescriptor]::new($Actual.GetSecurityDescriptorBinaryForm(),0).DiscretionaryAcl
+  $desiredDacl=[Security.AccessControl.RawSecurityDescriptor]::new($Desired.GetSecurityDescriptorBinaryForm(),0).DiscretionaryAcl
+  if ($null -eq $actualDacl -or $null -eq $desiredDacl) { return $false }
+  $actualBytes=[byte[]]::new($actualDacl.BinaryLength)
+  $desiredBytes=[byte[]]::new($desiredDacl.BinaryLength)
+  $actualDacl.GetBinaryForm($actualBytes,0)
+  $desiredDacl.GetBinaryForm($desiredBytes,0)
+  # Compare the access entries and protection, not Windows' automatic AI marker.
+  return [Convert]::ToBase64String($actualBytes) -eq [Convert]::ToBase64String($desiredBytes)
+}
+
 function Set-PrivateBuildDirectory([string]$Path) {
   $directory = [IO.Directory]::CreateDirectory($Path)
   if ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse point not allowed in private build output.' }
@@ -7,15 +20,14 @@ function Set-PrivateBuildDirectory([string]$Path) {
   foreach ($sid in $sids) {
     $desired.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
   }
-  $section = [Security.AccessControl.AccessControlSections]::Access
   $current = Get-Acl -LiteralPath $Path
-  if ($current.GetSecurityDescriptorSddlForm($section) -ne $desired.GetSecurityDescriptorSddlForm($section)) {
+  if (-not (Test-PrivateBuildDacl $current $desired)) {
     # Constructed descriptor only has modified DACL. Set-Acl is deliberately not used:
     # it can try to persist extra sections from the original descriptor.
     $directory.SetAccessControl($desired)
   }
   $actual = Get-Acl -LiteralPath $Path
-  if ($actual.GetSecurityDescriptorSddlForm($section) -ne $desired.GetSecurityDescriptorSddlForm($section)) { throw 'Private directory DACL validation failed.' }
+  if (-not (Test-PrivateBuildDacl $actual $desired)) { throw 'Private directory DACL validation failed.' }
 }
 
 function Assert-WindowsGuiExecutable([string]$Path) {

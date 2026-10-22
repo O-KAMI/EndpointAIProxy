@@ -97,5 +97,10 @@ try {
 } finally {
   Set-Location -LiteralPath $savedLocation.Path
   foreach ($name in $environment.Keys) { [Environment]::SetEnvironmentVariable($name,$environment[$name],'Process') }
-  if ($temporary -and (Test-Path -LiteralPath $temporary)) { Remove-Item -LiteralPath $temporary -Recurse -Force }
+  if ($temporary -and (Test-Path -LiteralPath $temporary)) {
+    $resolvedTemporary=[IO.Path]::GetFullPath($temporary)
+    $resolvedOutput=[IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')+'\'
+    if (-not $resolvedTemporary.StartsWith($resolvedOutput,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($resolvedTemporary) -notmatch '^fixtures-[a-f0-9]{32}$') { throw 'Refusing cleanup outside the protected fixture directory.' }
+    Remove-Item -LiteralPath $resolvedTemporary -Recurse -Force
+  }
 }
