@@ -18,7 +18,11 @@
            Scope="perMachine"
            Codepage="936"
            InstallerVersion="500">
+    <?ifdef ProxyEnableDSH?>
+    <MajorUpgrade Schedule="afterInstallExecute" DowngradeErrorMessage="已安装更高版本的顺丰终端 AI 请求代理。" />
+    <?else?>
     <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更高版本的顺丰终端 AI 请求代理。" />
+    <?endif?>
     <Upgrade Id="643CFDA1-3A12-4C57-BD65-5F6106CBAB90">
       <UpgradeVersion Minimum="$(var.ProductVersion)" Maximum="$(var.ProductVersion)"
                       IncludeMinimum="yes" IncludeMaximum="yes" OnlyDetect="yes"
@@ -156,7 +160,14 @@
       <Custom Action="PreflightLegacy" Before="InstallValidate" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
       <Custom Action="SnapshotConfiguration" After="InstallValidate" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
       <Custom Action="RollbackConfiguration" Before="QuiesceLegacy" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
+      <?ifdef ProxyEnableDSH?>
+      <!-- Execute the stop/snapshot script before removing the old product,
+           before ProcessComponents or any new payload installation is scheduled. -->
+      <Custom Action="QuiesceLegacy" After="InstallInitialize" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
+      <InstallExecute After="QuiesceLegacy" />
+      <?else?>
       <Custom Action="QuiesceLegacy" Before="RemoveExistingProducts" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
+      <?endif?>
       <Custom Action="ProvisionProductionControl" After="InstallServices" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
       <Custom Action="VerifyInstalledService" After="StartServices" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
       <Custom Action="CommitConfiguration" After="VerifyInstalledService" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />

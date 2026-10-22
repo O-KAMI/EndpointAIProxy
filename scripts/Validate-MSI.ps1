@@ -52,6 +52,13 @@ try {
   if ($service[0][1] -match '--exclude-codex') { throw 'A distributable MSI must not embed the local Codex exclusion.' }
   $binary=@(Read-MsiRows 'SELECT `Name` FROM `Binary` WHERE `Name`=''InstallerActionsBinary''' 1)
   if ($binary.Count -ne 1) { throw 'Installer helper binary missing.' }
+  $sequence=@{}
+  foreach ($row in @(Read-MsiRows 'SELECT `Action`, `Sequence` FROM `InstallExecuteSequence`' 2)) { $sequence[$row[0]]=[int]$row[1] }
+  $earlyExecution=@('InstallInitialize','RollbackConfiguration','QuiesceLegacy','InstallExecute','RemoveExistingProducts','ProcessComponents','InstallFiles')
+  for ($index=1; $index -lt $earlyExecution.Count; $index++) {
+    $before=$earlyExecution[$index-1];$after=$earlyExecution[$index]
+    if (-not $sequence.ContainsKey($before) -or -not $sequence.ContainsKey($after) -or $sequence[$before] -ge $sequence[$after]) { throw 'Go MSI must execute the stop/snapshot script before old-product removal and new-component processing.' }
+  }
   $detach=@(Read-MsiRows 'SELECT `Target` FROM `CustomAction` WHERE `Action`=''DetachManagedConfigurations''' 1)
   if ($detach.Count -ne 1 -or $detach[0][0] -ne '--maintenance=detach-all --auto-attach=false') { throw 'Configuration detach action mismatch.' }
   $same=@(Read-MsiRows 'SELECT `ActionProperty` FROM `Upgrade` WHERE `ActionProperty`=''SF_SAME_VERSION_PRODUCTS''' 1)
