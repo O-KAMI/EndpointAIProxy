@@ -25,6 +25,7 @@ type Profile struct {
 	DSHOverlaysUnknown        bool
 	DSHVersion                string
 	DSHPiAIVersion            string
+	DSHDesktopAccountVerified bool
 }
 type Result struct {
 	SID, Path, ProviderID, RouteID, Mode, Ownership, ErrorCode string
@@ -32,11 +33,14 @@ type Result struct {
 	Changed                                                    bool
 }
 type Manager struct {
-	Store              *state.Store
-	Origin, BackupRoot string
-	Allowlisted        func(string) bool
-	EnableDSH          bool
-	mu                 sync.Mutex
+	Store               *state.Store
+	Origin, BackupRoot  string
+	Allowlisted         func(string) bool
+	EnableDSH           bool
+	ExcludeCodex        bool
+	AccountOrigin       func(string, string) (string, error)
+	PruneAccountOrigins func(map[string]bool)
+	mu                  sync.Mutex
 }
 type decision struct {
 	target     string
@@ -259,6 +263,19 @@ func (m *Manager) run(ctx context.Context, profiles []Profile, detach bool) ([]R
 	if e := m.validate(); e != nil {
 		return nil, e
 	}
+	defer func() {
+		if m.PruneAccountOrigins != nil {
+			if routes, err := m.Store.ListRoutes(context.Background()); err == nil {
+				valid := map[string]bool{}
+				for _, route := range routes {
+					if strings.HasPrefix(route.ProviderID, "dsh:messages:account:") {
+						valid[route.RouteID] = true
+					}
+				}
+				m.PruneAccountOrigins(valid)
+			}
+		}
+	}()
 	var results []Result
 	var errs []error
 	for _, p := range profiles {
@@ -276,6 +293,9 @@ func (m *Manager) run(ctx context.Context, profiles []Profile, detach bool) ([]R
 			ccErr = statErr
 		}
 		for _, app := range []string{"claude", "codex"} {
+			if m.ExcludeCodex && app == "codex" && !detach {
+				continue
+			}
 			var rs []Result
 			var e error
 			if ccErr != nil {

@@ -34,6 +34,74 @@ func writeFixture(t *testing.T, path, content string) {
 		t.Fatal(e)
 	}
 }
+
+func TestCodexExclusionLeavesDirectConfigurationUntouched(t *testing.T) {
+	m, p := fixtureManager(t)
+	m.ExcludeCodex = true
+	original := "model = \"fixture\"\nopenai_base_url = \"https://codex.example/v1\"\n"
+	writeFixture(t, configPath(p, "codex"), original)
+	writeFixture(t, configPath(p, "claude"), `{"env":{"ANTHROPIC_BASE_URL":"https://claude.example"}}`)
+	for repeat := 0; repeat < 2; repeat++ {
+		if _, err := m.Reconcile(context.Background(), []Profile{p}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	content, err := os.ReadFile(configPath(p, "codex"))
+	if err != nil || string(content) != original {
+		t.Fatal("excluded Codex configuration changed", err)
+	}
+	routes, err := m.Store.ListRoutes(context.Background())
+	if err != nil || len(routes) != 1 || routes[0].AgentType != 0 {
+		t.Fatal("exclusion must preserve Claude attachment", routes, err)
+	}
+	if _, err := m.DetachAll(context.Background(), []Profile{p}); err != nil {
+		t.Fatal(err)
+	}
+	content, _ = os.ReadFile(configPath(p, "codex"))
+	if string(content) != original {
+		t.Fatal("detach changed unmanaged Codex")
+	}
+}
+
+func TestCodexExclusionPreservesCCSwitchCodexProviders(t *testing.T) {
+	m, p := fixtureManager(t)
+	m.ExcludeCodex = true
+	path := filepath.Join(p.Home, ".cc-switch", "cc-switch.db")
+	content, err := os.ReadFile(fixtureCC(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, path, string(content))
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	settings := `{"config":"model = \"fixture\"\nopenai_base_url = \"https://codex.example/v1\"\n"}`
+	if _, err := db.Exec(`INSERT INTO providers VALUES('codex-fixture','codex','Fixture',?,1)`, settings); err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, configPath(p, "claude"), `{"env":{"ANTHROPIC_BASE_URL":"https://upstream.example"}}`)
+	original := "model = \"fixture\"\n"
+	writeFixture(t, configPath(p, "codex"), original)
+	if _, err := m.Reconcile(context.Background(), []Profile{p}); err != nil {
+		t.Fatal(err)
+	}
+	var saved string
+	if err := db.QueryRow(`SELECT settings_config FROM providers WHERE app_type='codex'`).Scan(&saved); err != nil || saved != settings {
+		t.Fatal("Codex provider modified", err)
+	}
+	live, _ := os.ReadFile(configPath(p, "codex"))
+	if string(live) != original {
+		t.Fatal("live Codex modified")
+	}
+	routes, _ := m.Store.ListRoutes(context.Background())
+	for _, route := range routes {
+		if strings.HasPrefix(route.ProviderID, "codex:") || route.AgentType == 1 {
+			t.Fatal("excluded route created")
+		}
+	}
+}
 func TestManagerAttachIdempotentDetachPreservesOtherUserEdits(t *testing.T) {
 	m, p := fixtureManager(t)
 	ctx := context.Background()

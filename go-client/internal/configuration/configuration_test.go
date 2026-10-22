@@ -141,6 +141,19 @@ func TestCCOnlineBackupAndCompareAndSwapTransaction(t *testing.T) {
 		t.Fatal("endpoint not changed", e)
 	}
 }
+
+func TestCCDatabaseURIHandlesDriveUnicodeSpacesAndFragmentCharacters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "中文 has spaces #", "cc.db")
+	content, err := os.ReadFile(fixtureCC(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, path, string(content))
+	inspection, err := InspectCC(context.Background(), path)
+	if err != nil || len(inspection.Providers) != 1 {
+		t.Fatal("database path did not round trip", err)
+	}
+}
 func TestCCModesUseAppEnabledAndLiveEvidence(t *testing.T) {
 	p := CCProxy{ProxyEnabled: true, Enabled: false, Address: "0.0.0.0", Port: 15721}
 	mode, _ := DetectCCMode("claude", p, true, "https://upstream.example")

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -73,7 +74,11 @@ func OpenReadOnly(path string, p Protector) (*Store, error) {
 			return nil, errors.New("state path must not be a symbolic link")
 		}
 	}
-	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}
+	uriPath := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	uri := url.URL{Scheme: "file", Path: uriPath}
 	q := uri.Query()
 	q.Set("mode", "ro")
 	q.Set("_pragma", "busy_timeout(5000)")

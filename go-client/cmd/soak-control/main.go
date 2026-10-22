@@ -190,7 +190,7 @@ func (c *controller) handle(in protocol.InnerRequest, body []byte) (int, any, ma
 
 func readKey(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() != 32 {
+	if err != nil || !info.Mode().IsRegular() || info.Size() != 32 || !privateKeyFile(path, info) {
 		return nil, errors.New("SOAK_KEY_FILE_INVALID")
 	}
 	key, err := os.ReadFile(path)

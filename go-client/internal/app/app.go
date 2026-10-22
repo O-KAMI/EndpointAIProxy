@@ -34,6 +34,7 @@ type Options struct {
 	Policy                    contracts.Policy
 	AutoAttach                bool
 	EnableDSH                 bool
+	ExcludeCodex              bool
 	DSHHomes                  []string
 	Control                   *control.Options
 	GatewayKey                []byte
@@ -45,6 +46,7 @@ type App struct {
 	Audit                                                     *audit.Store
 	Profiles                                                  func(context.Context) ([]platform.Profile, error)
 	Client                                                    *control.Client
+	accountListeners                                          *proxy.AccountListeners
 	mu                                                        sync.RWMutex
 	mutation                                                  sync.Mutex
 	command                                                   sync.Mutex
@@ -118,6 +120,7 @@ func New(ctx context.Context, opts Options, store *state.Store, logs *audit.Stor
 		}
 	}
 	a.allowlist = compileAllowlist(a.policy)
+	a.accountListeners = proxy.NewAccountListeners(a.Handler())
 	return a, nil
 }
 
@@ -207,8 +210,25 @@ func (a *App) ApplyPolicy(ctx context.Context, p contracts.Policy, sig string) e
 }
 
 func (a *App) manager() *configuration.Manager {
-	return &configuration.Manager{Store: a.Store, Origin: "http://" + a.Options.Listen, BackupRoot: filepath.Join(a.Options.DataRoot, "config-backups"), Allowlisted: a.Bypass, EnableDSH: a.Options.EnableDSH}
+	return &configuration.Manager{Store: a.Store, Origin: "http://" + a.Options.Listen, BackupRoot: filepath.Join(a.Options.DataRoot, "config-backups"), Allowlisted: a.Bypass, EnableDSH: a.Options.EnableDSH, ExcludeCodex: a.Options.ExcludeCodex, AccountOrigin: a.accountListeners.Ensure, PruneAccountOrigins: a.accountListeners.Prune}
 }
+
+func (a *App) StartAccountListeners(ctx context.Context) error {
+	routes, err := a.Store.ListRoutes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, route := range routes {
+		if strings.HasPrefix(route.ProviderID, "dsh:messages:account:") {
+			if _, err := a.accountListeners.Ensure(route.RouteID, route.InjectedBaseURL); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (a *App) CloseAccountListeners() { a.accountListeners.Close() }
 
 // PrepareConfigurationProfiles restores trusted recovery roots before inspecting
 // live launch overlays. Maintenance must use this even when new DSH attachment
@@ -234,6 +254,7 @@ func PrepareConfigurationProfiles(ctx context.Context, m *configuration.Manager,
 		meta, ok := metadata[out[i].SID]
 		out[i].DSHVersion = meta.Version
 		out[i].DSHPiAIVersion = meta.DSHPiAIVersion
+		out[i].DSHDesktopAccountVerified = meta.DesktopAccountVerified
 		out[i].DSHOverlaysUnknown = !ok || meta.OverlaysUnknown
 	}
 	return out, nil

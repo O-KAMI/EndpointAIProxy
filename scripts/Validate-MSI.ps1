@@ -3,6 +3,8 @@
 param(
   [Parameter(Mandatory)][string]$MsiFile,
   [ValidatePattern('^(|\d+\.\d+\.\d+)$')][string]$ProductVersion = '',
+  [string]$ExpectedGatewayOrigin,
+  [ValidateSet('','true','false')][string]$ExpectedEnableDSH = '',
   [string]$ReportPath
 )
 $ErrorActionPreference='Stop'
@@ -39,8 +41,15 @@ try {
   }
   $marker=@(Read-MsiRows 'SELECT `Value` FROM `Property` WHERE `Property`=''EndpointAIDLPLogMarker''' 1)
   if ($marker.Count -ne 1 -or $marker[0][0] -ne "EndpointAIDLP-Windows-Go-$ProductVersion") { throw 'Go MSI log marker mismatch.' }
-  $service=@(Read-MsiRows 'SELECT `Name` FROM `ServiceInstall`' 1)
+  $service=@(Read-MsiRows 'SELECT `Name`, `Arguments` FROM `ServiceInstall`' 2)
   if ($service.Count -ne 1 -or $service[0][0] -ne 'SfEndpointAIProxy') { throw 'MSI service identity mismatch.' }
+  $gatewayMatch=[regex]::Match($service[0][1],'(?:^|\s)--gateway-origin=(\S+)')
+  $gatewayUri=$null
+  if (-not $gatewayMatch.Success -or -not [Uri]::TryCreate($gatewayMatch.Groups[1].Value,[UriKind]::Absolute,[ref]$gatewayUri) -or $gatewayUri.Host.EndsWith('.invalid') -or $gatewayUri.UserInfo -ne '' -or $gatewayUri.Query -ne '' -or $gatewayUri.Fragment -ne '' -or $gatewayUri.AbsolutePath -ne '/') { throw 'MSI must contain an explicit deployment gateway origin.' }
+  if ($ExpectedGatewayOrigin -and $gatewayMatch.Groups[1].Value -ne $ExpectedGatewayOrigin) { throw 'MSI deployment gateway mismatch.' }
+  $dshMatch=[regex]::Match($service[0][1],'(?:^|\s)--enable-dsh=(true|false)(?:\s|$)')
+  if (-not $dshMatch.Success -or ($ExpectedEnableDSH -ne '' -and $dshMatch.Groups[1].Value -ne $ExpectedEnableDSH)) { throw 'MSI DSH deployment setting mismatch.' }
+  if ($service[0][1] -match '--exclude-codex') { throw 'A distributable MSI must not embed the local Codex exclusion.' }
   $binary=@(Read-MsiRows 'SELECT `Name` FROM `Binary` WHERE `Name`=''InstallerActionsBinary''' 1)
   if ($binary.Count -ne 1) { throw 'Installer helper binary missing.' }
   $detach=@(Read-MsiRows 'SELECT `Target` FROM `CustomAction` WHERE `Action`=''DetachManagedConfigurations''' 1)

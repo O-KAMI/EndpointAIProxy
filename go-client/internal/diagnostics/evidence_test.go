@@ -4,12 +4,38 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"endpointai/client/internal/protect"
+	"endpointai/client/internal/state"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestStateMetadataReadsUnicodeAndEscapedWindowsPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "诊断 #")
+	key, err := protect.NewFileKey(filepath.Join(root, "fixture.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(root, "state", "client.db"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := store.GetOrCreateDeviceID(context.Background())
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	store.Close()
+	out := map[string][]byte{}
+	errorsFound := []string{}
+	stateMetadata(context.Background(), root, out, &errorsFound)
+	if len(errorsFound) != 0 || !strings.Contains(string(out["state/identity.json"]), id) {
+		t.Fatalf("state metadata unavailable: %v", errorsFound)
+	}
+}
 
 func TestBoundedGzipEvidenceAndBodyRemoval(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())

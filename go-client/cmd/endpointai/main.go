@@ -36,7 +36,7 @@ import (
 	"endpointai/client/internal/state"
 )
 
-var version = "0.2.2"
+var version = "0.2.3"
 
 type options struct {
 	app                                                  app.Options
@@ -50,7 +50,7 @@ type options struct {
 
 func parse(args []string) (options, error) {
 	cli := map[string]string{}
-	known := map[string]bool{"auto-attach": true, "enable-dsh": true, "dsh-homes": true, "route-mode": true, "gateway-origin": true, "allow-insecure-gateway": true, "maintenance": true, "diagnostics-output": true, "diagnostics-since-hours": true, "diagnostics-request-id": true}
+	known := map[string]bool{"auto-attach": true, "exclude-codex": true, "enable-dsh": true, "dsh-homes": true, "route-mode": true, "gateway-origin": true, "allow-insecure-gateway": true, "maintenance": true, "diagnostics-output": true, "diagnostics-since-hours": true, "diagnostics-request-id": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "--") {
@@ -118,6 +118,10 @@ func parse(args []string) (options, error) {
 	opts.app.EnableDSH, e = strconv.ParseBool(get("enable-dsh", "SF_PROXY_ENABLE_DSH", "false"))
 	if e != nil {
 		return opts, errors.New("DSH_ENABLE_INVALID")
+	}
+	opts.app.ExcludeCodex, e = strconv.ParseBool(get("exclude-codex", "SF_PROXY_EXCLUDE_CODEX", "false"))
+	if e != nil {
+		return opts, errors.New("CODEX_EXCLUSION_INVALID")
 	}
 	if value := get("dsh-homes", "SF_PROXY_DSH_HOMES", ""); value != "" {
 		if !strings.HasPrefix(strings.TrimSpace(value), "[") || len(value) > 64<<10 || json.Unmarshal([]byte(value), &opts.app.DSHHomes) != nil || len(opts.app.DSHHomes) > 32 {
@@ -282,6 +286,10 @@ func run(ctx context.Context, opts options) error {
 	if e != nil {
 		return observability.Wrap("initialize", "CLIENT_INITIALIZATION_FAILED", e)
 	}
+	defer service.CloseAccountListeners()
+	if e = service.StartAccountListeners(ctx); e != nil {
+		return observability.Wrap("account_listener", "ACCOUNT_LISTENER_UNAVAILABLE", e)
+	}
 	if opts.development && os.Getenv("SF_PROXY_BOOTSTRAP_UPSTREAM") != "" {
 		original := os.Getenv("SF_PROXY_BOOTSTRAP_UPSTREAM")
 		if _, e = protocol.NormalizeBaseURL(original); e != nil {
@@ -339,6 +347,7 @@ func run(ctx context.Context, opts options) error {
 	cancelRequests()
 	<-handlersDone
 	workers.Wait()
+	service.CloseAccountListeners()
 	logs.Log("SERVICE_STOPPED", map[string]any{"graceful": e == nil})
 	cancelAudit()
 	<-auditDone

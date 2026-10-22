@@ -458,6 +458,15 @@ func (m *Manager) dshProfile(ctx context.Context, p Profile, detach bool) ([]Res
 		return nil, retireErr
 	}
 	for _, doc := range docs {
+		if doc.profile == "desktop" && (p.DSHVersion == DSHDesktopSupportedVersion || detach && m.hasAccountJournal(p, doc)) {
+			rs, err := m.dshAccountProfile(ctx, p, doc, detach)
+			results = append(results, rs...)
+			if err != nil {
+				scanIncomplete = true
+				errs = append(errs, err)
+			}
+			continue
+		}
 		if len(doc.candidates) == 0 {
 			if doc.issue != "" {
 				results = append(results, Result{SID: p.SID, Path: doc.path, AgentType: dshAgent, Mode: "unsupported", Ownership: "direct", Status: 5, ErrorCode: doc.issue})
@@ -683,6 +692,23 @@ func (m *Manager) inspectDSHWithRoutes(ctx context.Context, profiles []Profile, 
 			errs = append(errs, e)
 		}
 		for _, doc := range docs {
+			if doc.profile == "desktop" && (p.DSHVersion == DSHDesktopSupportedVersion || m.hasAccountJournal(p, doc)) {
+				identity := dshIdentity(p, doc.root, doc.profile, "llm-deepseek-account", "", "messages", "account")
+				asset := Endpoint{SID: p.SID, Family: "deepseekHarness", ProviderID: identity, Mode: "unsupported", Source: 1, Current: true, RouteStatus: 5}
+				if p.DSHDesktopAccountVerified && len(doc.tree.Content) > 0 {
+					if rows, err := accountRows(doc); err == nil {
+						current := "https://api.deepseek.com"
+						if row := rows["deepseek-account"]; row != nil {
+							if value := yamlString(yamlField(yamlField(row, "config"), "inferenceOrigin")); value != "" {
+								current = value
+							}
+						}
+						asset = m.inspectEndpoint(p, "deepseekHarness", identity, current, "ordinary", 1, true, dshAgent, routes)
+					}
+				}
+				out = append(out, asset)
+				continue
+			}
 			if len(doc.candidates) == 0 && doc.issue != "" {
 				out = append(out, Endpoint{SID: p.SID, Family: "deepseekHarness", ProviderID: dshIdentity(p, doc.root, doc.profile, "unsupported", "", "unknown", "custom"), Mode: "unsupported", Source: 1, RouteStatus: 5})
 				continue

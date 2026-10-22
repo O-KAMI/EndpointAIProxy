@@ -3,6 +3,14 @@
   <?ifndef EndpointAIDLPLogMarker?>
   <?define EndpointAIDLPLogMarker="EndpointAIDLP-Windows-0.1.22"?>
   <?endif?>
+  <?ifndef ProxyGatewayOrigin?>
+  <?define ProxyGatewayOrigin="http://gateway.example.invalid"?>
+  <?endif?>
+  <?ifdef ProxyEnableDSH?>
+  <?define ProxyDSHArgument=" --enable-dsh=$(var.ProxyEnableDSH)"?>
+  <?else?>
+  <?define ProxyDSHArgument=""?>
+  <?endif?>
   <Package Name="顺丰终端 AI 请求代理"
            Manufacturer="SF"
            Version="$(var.ProductVersion)"
@@ -46,7 +54,7 @@
                       DisplayName="顺丰终端 AI 请求代理"
                       Description="发现并挂载受支持的 AI Agent，将模型请求经受管路由转发并留痕。"
                       Type="ownProcess"
-                      Arguments="--auto-attach=true --route-mode=FixedGateway --gateway-origin=http://gateway.example.invalid --allow-insecure-gateway=true"
+                      Arguments="--auto-attach=true --route-mode=FixedGateway --gateway-origin=$(var.ProxyGatewayOrigin) --allow-insecure-gateway=true$(var.ProxyDSHArgument)"
                       Start="auto"
                       ErrorControl="normal"
                       Vital="yes" />

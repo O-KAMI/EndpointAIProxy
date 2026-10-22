@@ -6,6 +6,10 @@
 
 ## 当前版本与事实来源
 
+2026-10-22 Windows 本地扩展候选为 **0.2.3**，基于下列 0.2.2 冻结源码。
+Codex 排除、生产网关构建参数、Desktop rc.2 账户 origin 与验收状态见
+[Windows 0.2.3 记录](docs/WINDOWS-023-ACCEPTANCE.md)。原生验收尚未完成，不是推广通过结论。
+
 | 组件 | 当前定位 | 事实来源 |
 |---|---|---|
 | Go 客户端 0.2.2 | Win/Mac 共用核心的候选实现，尚未满足正式替换条件 | [Go 模块](go-client/go.mod)、[功能矩阵](docs/GO-CLIENT-PARITY.md)、[阶段验收](docs/GO-CLIENT-VERIFICATION.md) |

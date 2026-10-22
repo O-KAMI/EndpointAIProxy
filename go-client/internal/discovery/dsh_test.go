@@ -75,7 +75,8 @@ func TestDSHNodeEntryNeverScansArgumentValues(t *testing.T) {
 			t.Fatal(args)
 		}
 	}
-	args := splitProcessArgs(`/usr/bin/node "` + entry + `" --api-key SECRET`)
+	// This tokenizer consumes POSIX ps output, including in Windows fixtures.
+	args := splitProcessArgs(`/usr/bin/node "` + filepath.ToSlash(entry) + `" --api-key SECRET`)
 	path, _, ok = dshNodeEntry(args)
 	if !ok || strings.Contains(path, "SECRET") {
 		t.Fatal(args, path)

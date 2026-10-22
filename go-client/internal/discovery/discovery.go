@@ -51,6 +51,7 @@ type sample struct {
 	strength, method         int
 	launchProfile            string
 	launchOverridesUnknown   bool
+	desktopAccount           bool
 	inspectionUnknown        bool // local completeness signal, never inventory evidence
 }
 

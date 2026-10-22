@@ -13,9 +13,10 @@ import (
 const DSHSupportedVersion = "0.2.1-alpha.5"
 
 type DSHMetadata struct {
-	DSHPiAIVersion  string
-	Version         string
-	OverlaysUnknown bool
+	DSHPiAIVersion         string
+	Version                string
+	OverlaysUnknown        bool
+	DesktopAccountVerified bool
 }
 
 // DSHProfileMetadata reads manifests only. roots must come from trusted deployment
@@ -66,6 +67,16 @@ func DSHProfileMetadata(ctx context.Context, profiles []platform.Profile, roots 
 		// use it to assert a compatible DSH runtime.
 		md := DSHMetadata{OverlaysUnknown: scanErr != nil}
 		for _, s := range running {
+			if s.sid == p.SID && s.desktopAccount {
+				md.DesktopAccountVerified = true
+			}
+		}
+		for _, s := range running {
+			if s.sid == p.SID && s.kind == DeepSeekHarness && !s.desktopAccount && !s.inspectionUnknown && (s.launchProfile == "desktop" || s.launchOverridesUnknown) {
+				md.DesktopAccountVerified = false
+			}
+		}
+		for _, s := range running {
 			if s.sid == p.SID && s.inspectionUnknown {
 				md.OverlaysUnknown = true
 			}
@@ -95,6 +106,7 @@ func DSHProfileMetadata(ctx context.Context, profiles []platform.Profile, roots 
 				md.Version = v
 			}
 		}
+		md.DesktopAccountVerified = md.DesktopAccountVerified && md.Version == "0.2.1-rc.2" && !md.OverlaysUnknown
 		out[p.SID] = md
 	}
 	return out

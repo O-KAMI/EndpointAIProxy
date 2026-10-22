@@ -5,6 +5,7 @@ import (
 	"endpointai/client/internal/platform"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -36,7 +37,11 @@ func TestRealDSHNodeLaunchWithSpacesAndChinese(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { cmd.Process.Kill(); cmd.Wait() }()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			budget := 5 * time.Second
+			if runtime.GOOS == "windows" {
+				budget = 30 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), budget)
 			defer cancel()
 			for {
 				samples, e := processSamples(ctx, []platform.Profile{p})

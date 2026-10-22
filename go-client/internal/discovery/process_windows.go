@@ -6,11 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"golang.org/x/sys/windows"
+	"path/filepath"
 	"strings"
 	"unsafe"
 )
 
 func processSamples(ctx context.Context, profiles []platform.Profile) ([]sample, error) {
+	type desktopRuntime struct {
+		version  string
+		verified bool
+	}
+	desktopCache := map[string]desktopRuntime{}
 	snap, e := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if e != nil {
 		return nil, e
@@ -23,7 +29,7 @@ func processSamples(ctx context.Context, profiles []platform.Profile) ([]sample,
 		if e := ctx.Err(); e != nil {
 			return nil, e
 		}
-		if _, ok := processKind(windows.UTF16ToString(entry.ExeFile[:])); ok || isNodeExecutable(windows.UTF16ToString(entry.ExeFile[:])) {
+		if _, ok := processKind(windows.UTF16ToString(entry.ExeFile[:])); ok || strings.EqualFold(windows.UTF16ToString(entry.ExeFile[:]), "DeepSeek Harness.exe") || isNodeExecutable(windows.UTF16ToString(entry.ExeFile[:])) {
 			nodeProcess := isNodeExecutable(windows.UTF16ToString(entry.ExeFile[:]))
 			h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, entry.ProcessID)
 			if err == nil {
@@ -44,6 +50,31 @@ func processSamples(ctx context.Context, profiles []platform.Profile) ([]sample,
 					launchProfile := ""
 					launchUnknown := true
 					strength := 2
+					desktopAccount := false
+					if kind == DeepSeekHarness && !isNodeExecutable(path) {
+						info, known := desktopCache[path]
+						if !known {
+							info.version, info.verified = dshDesktopAccountRuntime(path)
+							desktopCache[path] = info
+						}
+						if info.verified {
+							args := windowsProcessArgs(h)
+							if len(args) == 1 {
+								version, launchProfile, launchUnknown, desktopAccount = info.version, "desktop", false, true
+							} else if len(args) > 1 {
+								for _, profile := range profiles {
+									if profile.SID == sid && dshDesktopHostArgs(path, profile.Home, args) {
+										version, launchProfile, launchUnknown, desktopAccount = info.version, "desktop", false, true
+									}
+								}
+								for _, arg := range args[1:] {
+									if strings.HasPrefix(arg, "--type=") {
+										valid = false
+									}
+								}
+							}
+						}
+					}
 					if isNodeExecutable(path) {
 						if args := windowsProcessArgs(h); args != nil {
 							if script, v, ok := dshNodeEntry(args); ok {
@@ -72,7 +103,7 @@ func processSamples(ctx context.Context, profiles []platform.Profile) ([]sample,
 					}
 					for _, p := range profiles {
 						if p.SID == sid || strings.HasPrefix(strings.ToLower(path), strings.ToLower(p.Home+`\`)) {
-							out = append(out, sample{sid: p.SID, kind: kind, collector: "running-process", path: fmt.Sprintf("%s (PID %d)", path, entry.ProcessID), strength: strength, version: version, launchProfile: launchProfile, launchOverridesUnknown: launchUnknown})
+							out = append(out, sample{sid: p.SID, kind: kind, collector: "running-process", path: fmt.Sprintf("%s (PID %d)", path, entry.ProcessID), strength: strength, version: version, launchProfile: launchProfile, launchOverridesUnknown: launchUnknown, desktopAccount: desktopAccount})
 							break
 						}
 					}
@@ -90,6 +121,31 @@ func processSamples(ctx context.Context, profiles []platform.Profile) ([]sample,
 		return out, e
 	}
 	return out, nil
+}
+
+// rc.2's bundled desktop-host fixes the profile and disables extra patch files.
+// Accept only its complete packaged launch shape; arbitrary extra arguments
+// continue to make the profile unsafe to take over.
+func dshDesktopHostArgs(executable, home string, args []string) bool {
+	if len(args) != 8 || args[1] != "--expose-internals" {
+		return false
+	}
+	resources := filepath.Join(filepath.Dir(executable), "resources")
+	expected := map[int]string{
+		0: executable,
+		2: filepath.Join(resources, "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "index.js"),
+		3: filepath.Join(resources, "app.asar", "dsh"),
+		4: filepath.Join(home, ".dsh", "profiles", "desktop"),
+		5: filepath.Join(resources, "runtime", "primary-runtime"),
+		6: filepath.Join(resources, "runtime", "primary-runtime", "dependencies", "pnpm", "bin", "pnpm.mjs"),
+		7: filepath.Join(resources, "runtime", "bin"),
+	}
+	for index, path := range expected {
+		if !strings.EqualFold(filepath.Clean(args[index]), filepath.Clean(path)) {
+			return false
+		}
+	}
+	return true
 }
 
 func windowsProcessArgs(h windows.Handle) []string {

@@ -125,7 +125,7 @@ func TestOnlineBackupAndReadOnly(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	s, e := Open(filepath.Join(dir, "state.db"), p)
+	s, e := Open(filepath.Join(dir, "状态 #.db"), p)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -135,7 +135,7 @@ func TestOnlineBackupAndReadOnly(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	backup := filepath.Join(dir, "backup.db")
+	backup := filepath.Join(dir, "备份 #.db")
 	if e = s.Backup(ctx, backup); e != nil {
 		t.Fatal(e)
 	}

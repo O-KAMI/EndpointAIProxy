@@ -2,7 +2,9 @@
 [CmdletBinding()]
 param(
   [string]$CredentialsFile,
-  [ValidatePattern('^\d+\.\d+\.\d+$')][string]$ProductVersion = '0.2.2',
+  [ValidatePattern('^\d+\.\d+\.\d+$')][string]$ProductVersion = '0.2.3',
+  [Parameter(Mandatory=$true)][string]$GatewayOrigin,
+  [switch]$EnableDSH,
   [string]$OutputDirectory,
   [ValidatePattern('^[A-Fa-f0-9]{40}$')][string]$SigningCertificateThumbprint,
   [string]$SignToolPath,
@@ -22,6 +24,10 @@ try {
   $CredentialsFile = [IO.Path]::GetFullPath($CredentialsFile.Trim().Trim('"'))
   if (-not (Test-Path -LiteralPath $CredentialsFile -PathType Leaf)) { throw 'External credential file not found.' }
   Assert-ClientCredentials $CredentialsFile
+  $gatewayUri = $null
+  if (-not [Uri]::TryCreate($GatewayOrigin,[UriKind]::Absolute,[ref]$gatewayUri) -or $gatewayUri.Scheme -notin @('http','https') -or $gatewayUri.UserInfo -ne '' -or $gatewayUri.Query -ne '' -or $gatewayUri.Fragment -ne '' -or $gatewayUri.AbsolutePath -ne '/' -or $gatewayUri.Host.EndsWith('.invalid') -or $GatewayOrigin -match '[\s;"<>]') { throw 'Supply a real HTTP(S) gateway origin without credentials, path, query or fragment.' }
+  $GatewayOrigin = $gatewayUri.GetLeftPart([UriPartial]::Authority)
+  $dshArgument = $EnableDSH.IsPresent.ToString().ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = Join-Path $root 'artifacts/private-windows-go' }
   $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
   Protect-BuildPath $OutputDirectory
@@ -29,6 +35,9 @@ try {
   foreach ($name in @('GOTOOLCHAIN','CGO_ENABLED','GOOS','GOARCH','GOFLAGS')) { $oldEnvironment[$name] = [Environment]::GetEnvironmentVariable($name,'Process') }
   $env:GOTOOLCHAIN='local'; $env:CGO_ENABLED='0'; $env:GOOS='windows'; $env:GOARCH='amd64'; $env:GOFLAGS=''
   $hostTools = Assert-WindowsBuildHost
+  $sourceCommit=(& git -C $root rev-parse HEAD | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[a-f0-9]{40}$') { throw 'Cannot record the build source commit.' }
+  $sourceDirty=-not [string]::IsNullOrWhiteSpace((& git -C $root status --porcelain | Out-String))
   if ($SigningCertificateThumbprint) {
     $certificate = Get-Item -LiteralPath ("Cert:\CurrentUser\My\" + $SigningCertificateThumbprint) -ErrorAction SilentlyContinue
     if ($null -eq $certificate -or -not $certificate.HasPrivateKey) { throw 'Signing certificate with private key is required in CurrentUser\My.' }
@@ -77,11 +86,11 @@ exit 1603
   Set-Location -LiteralPath $root
   $stage = 'wix-msi'
   $project = Join-Path $root 'installer/Sf.EndpointAI.Go.Setup/Sf.EndpointAI.Go.Setup.wixproj'
-  Invoke-CheckedNative $hostTools.Dotnet @('build',$project,'-c','Release',"-p:ProductVersion=$ProductVersion","-p:ProductionInputDir=$inputDir","-p:ServicePublishDir=$publish","-p:InstallerActionsDir=$actions","-p:OutputPath=$msiOutput/","-p:IntermediateOutputPath=$temporary/obj/")
+  Invoke-CheckedNative $hostTools.Dotnet @('build',$project,'-c','Release',"-p:ProductVersion=$ProductVersion","-p:GatewayOrigin=$GatewayOrigin","-p:EnableDSH=$dshArgument","-p:ProductionInputDir=$inputDir","-p:ServicePublishDir=$publish","-p:InstallerActionsDir=$actions","-p:OutputPath=$msiOutput/","-p:IntermediateOutputPath=$temporary/obj/")
   $name = "EndpointAIDLP-Client-$ProductVersion-go-win-x64.msi"
   $msi = Join-Path $msiOutput $name
   $stage = 'validate-msi'
-  & "$PSScriptRoot/Validate-MSI.ps1" -MsiFile $msi -ProductVersion $ProductVersion -ReportPath (Join-Path $temporary 'msi-validation.json')
+  & "$PSScriptRoot/Validate-MSI.ps1" -MsiFile $msi -ProductVersion $ProductVersion -ExpectedGatewayOrigin $GatewayOrigin -ExpectedEnableDSH $dshArgument -ReportPath (Join-Path $temporary 'msi-validation.json')
   if ($SigningCertificateThumbprint) {
     $stage = 'sign-msi'
     Invoke-CheckedNative $SignToolPath @('sign','/sha1',$SigningCertificateThumbprint,'/fd','SHA256','/tr',$TimestampUrl,'/td','SHA256',$msi)
@@ -93,7 +102,7 @@ exit 1603
   $upgradeScripts=Join-Path $OutputDirectory 'scripts'
   Protect-BuildPath $upgradeScripts
   Copy-Item -LiteralPath "$root/Upgrade-Client.cmd" -Destination $OutputDirectory
-  foreach($script in @('Upgrade-Client.ps1','Windows-GoSupport.ps1','Installer-BuildSupport.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination $upgradeScripts}
+  foreach($script in @('Upgrade-Client.ps1','Windows-GoSupport.ps1','Installer-BuildSupport.ps1','Test-IndependentTerminal.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination $upgradeScripts}
   $migrationBinary=Join-Path $OutputDirectory 'MigrationHelper.exe'
   Copy-Item -LiteralPath (Join-Path $actions 'Sf.EndpointAI.InstallerActions.exe') -Destination $migrationBinary
   [IO.File]::WriteAllText(($migrationBinary+'.sha256'),((Get-Sha256 $migrationBinary)+'  MigrationHelper.exe'+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
@@ -102,7 +111,8 @@ exit 1603
   Copy-Item -LiteralPath (Join-Path $temporary 'msi-validation.json') -Destination (Join-Path $OutputDirectory 'msi-validation.json') -Force
   Copy-Item -LiteralPath "$PSScriptRoot/Collect-InstallerLogs.ps1" -Destination $OutputDirectory -Force
   Copy-Item -LiteralPath "$root/docs/WINDOWS-GO-DELIVERY.md" -Destination $OutputDirectory -Force
-  Write-BuildJson (Join-Path $OutputDirectory 'manifest.json') @{ productVersion=$ProductVersion; implementation='go'; architecture='windows-amd64'; signature=$signatureStatus; builtUtc=[DateTime]::UtcNow.ToString('o'); toolchain=$hostTools; moduleMode=$moduleMode; goModSha256=(Get-Sha256 "$root/go-client/go.mod"); goSumSha256=(Get-Sha256 "$root/go-client/go.sum"); payload=$payload; msi=@{ name=$name; sha256=$digest; bytes=(Get-Item -LiteralPath $target).Length }; installCommand="msiexec.exe /i `"$name`" /qn /norestart"; installed=$false; nativeLifecycleAcceptance='pending'; soakHoursRequired=4 }
+  Copy-Item -LiteralPath "$root/docs/INDEPENDENT-TERMINAL-ACCEPTANCE.md" -Destination $OutputDirectory -Force
+  Write-BuildJson (Join-Path $OutputDirectory 'manifest.json') @{ sourceCommit=$sourceCommit; sourceDirty=$sourceDirty; gatewayOrigin=$GatewayOrigin; enableDSH=$EnableDSH.IsPresent; productVersion=$ProductVersion; implementation='go'; architecture='windows-amd64'; signature=$signatureStatus; builtUtc=[DateTime]::UtcNow.ToString('o'); toolchain=$hostTools; moduleMode=$moduleMode; goModSha256=(Get-Sha256 "$root/go-client/go.mod"); goSumSha256=(Get-Sha256 "$root/go-client/go.sum"); payload=$payload; msi=@{ name=$name; sha256=$digest; bytes=(Get-Item -LiteralPath $target).Length }; installCommand="msiexec.exe /i `"$name`" /qn /norestart"; installed=$false; nativeLifecycleAcceptance='pending'; soakHoursRequired=4 }
   Write-BuildJson $reportPath @{ status='passed'; checks=@('go test','go vet','x64 GUI helper','MSI metadata and transaction sequence','Go-only MSI payload'); signature=$signatureStatus; installationPerformed=$false; nativeLifecycleAcceptance='pending'; ioaAcceptance='pending' }
   Write-Host "Candidate MSI: $target"
   Write-Host "Signature: $signatureStatus. No installation was performed."
@@ -115,5 +125,10 @@ exit 1603
 } finally {
   Set-Location -LiteralPath $savedLocation.Path
   foreach ($name in $oldEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name,$oldEnvironment[$name],'Process') }
-  if ($temporary -and (Test-Path -LiteralPath $temporary)) { Remove-Item -LiteralPath $temporary -Recurse -Force }
+  if ($temporary -and (Test-Path -LiteralPath $temporary)) {
+    $resolvedTemporary=[IO.Path]::GetFullPath($temporary)
+    $resolvedOutput=[IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')+'\'
+    if (-not $resolvedTemporary.StartsWith($resolvedOutput,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($resolvedTemporary) -notmatch '^stage-[a-f0-9]{32}$') { throw 'Refusing cleanup outside the protected build stage.' }
+    Remove-Item -LiteralPath $resolvedTemporary -Recurse -Force
+  }
 }

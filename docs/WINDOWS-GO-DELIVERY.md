@@ -1,5 +1,9 @@
 # Windows Go 0.2.2 源码交付与 IOA 验证
 
+Windows 0.2.3 本地扩展与当前门禁见 [验收记录](WINDOWS-023-ACCEPTANCE.md)。
+当前构建入口还必须提供 `-GatewayOrigin $DeploymentGatewayOrigin`，该变量由受控部署配置提供真实 HTTP(S) origin；
+只有控制端和网关兼容性确认后才添加 `-EnableDSH`。旧命令示例需补充此网关参数。
+
 此包包含 Go 客户端和 Windows 安装辅助程序源码、锁定依赖 vendor、一键 MSI 构建与校验材料。
 它不包含真实部署凭据、证书或旧 .NET 运行时。解压后保持目录结构，不能单独移动 WiX 项目。
 包内 Windows 原生安装结果在实际运行前均为待验；编译或 MSI 静态校验通过不能代表 IOA 已通过。

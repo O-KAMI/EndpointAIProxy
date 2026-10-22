@@ -45,7 +45,15 @@ func ccOpen(path string) (*sql.DB, error) {
 	if !info.Mode().IsRegular() {
 		return nil, problem("CCSWITCH_DATABASE_NOT_REGULAR")
 	}
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	absolute, e := filepath.Abs(path)
+	if e != nil {
+		return nil, e
+	}
+	uriPath := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	u := url.URL{Scheme: "file", Path: uriPath}
 	db, e := sql.Open("sqlite", u.String()+"?mode=rw&_pragma=busy_timeout(5000)")
 	if e == nil {
 		db.SetMaxOpenConns(1)

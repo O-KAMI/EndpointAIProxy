@@ -57,6 +57,11 @@ func replaceExistingFile(temp, path string, source, target *uint16, call func(*u
 	if !originalInfo.Mode().IsRegular() {
 		return problem("CONFIG_NOT_REGULAR")
 	}
+	// Windows FileInfo resolves its file ID lazily through the old pathname.
+	// Resolve it before ReplaceFileW is allowed to move that pathname.
+	if !os.SameFile(originalInfo, originalInfo) {
+		return problem("CONFIG_FILE_ID_UNAVAILABLE")
+	}
 	original, err := os.ReadFile(path)
 	if err != nil {
 		return err

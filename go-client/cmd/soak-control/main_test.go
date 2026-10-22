@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -61,23 +62,31 @@ func TestKeyRequiresPrivateRegular32ByteFile(t *testing.T) {
 	if err := os.WriteFile(path, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
 	}
+	setTestKeyPermissions(t, path, false)
 	if _, err := readKey(path); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, 0644); err != nil {
 		t.Fatal(err)
 	}
+	setTestKeyPermissions(t, path, true)
 	if _, err := readKey(path); err == nil {
 		t.Fatal("publicly readable key accepted")
 	}
 	if err := os.Chmod(path, 0600); err != nil {
 		t.Fatal(err)
 	}
-	link := path + ".link"
-	if err := os.Symlink(path, link); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readKey(link); err == nil {
-		t.Fatal("symlink key accepted")
-	}
+	setTestKeyPermissions(t, path, false)
+	t.Run("symlink", func(t *testing.T) {
+		link := path + ".link"
+		if err := os.Symlink(path, link); err != nil {
+			if runtime.GOOS == "windows" {
+				t.Skip("symbolic link creation requires Windows privilege")
+			}
+			t.Fatal(err)
+		}
+		if _, err := readKey(link); err == nil {
+			t.Fatal("symlink key accepted")
+		}
+	})
 }

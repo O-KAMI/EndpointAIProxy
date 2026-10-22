@@ -90,7 +90,7 @@ func TestCaptureCombinedLimitHashesRedactionAndSummary(t *testing.T) {
 	session := capture.(*Session)
 	request := []byte("REQ12345")
 	response := []byte("RESP67890")
-	capture.Headers("Inbound", http.Header{"Authorization": {"Bearer auth-secret"}, "Cookie": {"cookie-secret"}, "X-Api-Key": {"api-secret"}, "X-Fixture": {"retain"}})
+	capture.Headers("Inbound", http.Header{"Authorization": {"Bearer auth-secret"}, "Cookie": {"cookie-secret"}, "X-Api-Key": {"api-secret"}, "X-Dsh-Auth-Token": {"dsh-account-secret"}, "X-Fixture": {"retain"}})
 	capture.Request(request)
 	capture.Response(200, http.Header{"Set-Cookie": {"response-cookie-secret"}})
 	capture.Body(response)
@@ -103,7 +103,7 @@ func TestCaptureCombinedLimitHashesRedactionAndSummary(t *testing.T) {
 	if session.captured != 10 || !strings.Contains(text, "REQ12345") || strings.Contains(text, "RESP67890") {
 		t.Fatal("combined cap not enforced")
 	}
-	for _, secret := range []string{"auth-secret", "cookie-secret", "api-secret", "response-cookie-secret", "url-secret", "inbound-secret", "outbound-secret"} {
+	for _, secret := range []string{"auth-secret", "cookie-secret", "api-secret", "dsh-account-secret", "response-cookie-secret", "url-secret", "inbound-secret", "outbound-secret"} {
 		if strings.Contains(text, secret) {
 			t.Fatal("secret captured", secret)
 		}

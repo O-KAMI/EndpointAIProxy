@@ -385,7 +385,16 @@ func stateMetadata(ctx context.Context, root string, out map[string][]byte, erro
 		out["routes/registry-sanitized.json"] = []byte("[]")
 		return
 	}
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	absolute, e := filepath.Abs(path)
+	if e != nil {
+		*errorsFound = append(*errorsFound, "state:unavailable")
+		return
+	}
+	uriPath := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	u := url.URL{Scheme: "file", Path: uriPath}
 	q := u.Query()
 	q.Set("mode", "ro")
 	q.Set("_pragma", "busy_timeout(1000)")

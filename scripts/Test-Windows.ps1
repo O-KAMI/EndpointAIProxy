@@ -3,7 +3,7 @@
 param(
   [string]$MsiFile,
   [ValidateSet('None','Install','Uninstall')][string]$MachineAction='None',
-  [ValidateRange(0,4)][double]$DurationHours=0,
+  [ValidateRange(0,8)][double]$DurationHours=0,
   [string]$OutputDirectory,
   [ValidatePattern('^(|\d+\.\d+\.\d+)$')][string]$ProductVersion=''
 )
@@ -22,7 +22,7 @@ try {
   foreach ($name in @('GOTOOLCHAIN','CGO_ENABLED','GOOS','GOARCH','GOFLAGS')) { $environment[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
   $env:GOTOOLCHAIN='local'; $env:CGO_ENABLED='0'; $env:GOOS='windows'; $env:GOARCH='amd64'; $env:GOFLAGS=''
   $tools=Assert-WindowsBuildHost
- if(-not $ProductVersion){if($MsiFile){$ProductVersion=Get-MsiProductVersion $MsiFile}else{$ProductVersion='0.2.2'}}
+ if(-not $ProductVersion){if($MsiFile){$ProductVersion=Get-MsiProductVersion $MsiFile}else{$ProductVersion='0.2.3'}}
   if (-not $OutputDirectory) { $OutputDirectory=Join-Path $root ('artifacts/windows-test-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmss')) }
   $OutputDirectory=[IO.Path]::GetFullPath($OutputDirectory)
   Protect-BuildPath $OutputDirectory
@@ -80,7 +80,7 @@ try {
       $health=Invoke-RestMethod -Uri 'http://127.0.0.1:18080/healthz' -TimeoutSec 10 -UseBasicParsing
       if ($health.status -ne 'ok' -or $health.implementation -ne 'go' -or $health.clientVersion -ne $ProductVersion -or $health.installationPending -eq $true) { throw 'Native health implementation/version mismatch.' }
       $worker=Get-Process -Id $service.ProcessId -ErrorAction Stop
-      $record=@{ atUtc=[DateTime]::UtcNow.ToString('o'); status=$health.status; clientVersion=$health.clientVersion; implementation=$health.implementation; workingSetBytes=$worker.WorkingSet64; cpuSeconds=$worker.CPU }
+      $record=@{ atUtc=[DateTime]::UtcNow.ToString('o'); status=$health.status; clientVersion=$health.clientVersion; implementation=$health.implementation; processId=$service.ProcessId; workingSetBytes=$worker.WorkingSet64; privateBytes=$worker.PrivateMemorySize64; handles=$worker.HandleCount; threads=$worker.Threads.Count; cpuSeconds=$worker.CPU }
       [IO.File]::AppendAllText($samplePath,((ConvertTo-Json -InputObject $record -Compress) + [Environment]::NewLine),[Text.UTF8Encoding]::new($false))
       $samples++
       if ([DateTime]::UtcNow -lt $deadline) { Start-Sleep -Seconds 30 }

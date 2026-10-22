@@ -55,6 +55,22 @@ func TestOptionIsolationAndInvalidInputs(t *testing.T) {
 	}
 }
 
+func TestCodexExclusionDeploymentOption(t *testing.T) {
+	isolatedOptions(t)
+	t.Setenv("SF_PROXY_EXCLUDE_CODEX", "true")
+	opts, err := parse(nil)
+	if err != nil || !opts.app.ExcludeCodex {
+		t.Fatal("environment exclusion lost", err)
+	}
+	opts, err = parse([]string{"--exclude-codex=false"})
+	if err != nil || opts.app.ExcludeCodex {
+		t.Fatal("explicit flag must override environment", err)
+	}
+	if _, err = parse([]string{"--exclude-codex=invalid"}); err == nil {
+		t.Fatal("invalid exclusion accepted")
+	}
+}
+
 func TestLegacyListenerBlocksStateMutation(t *testing.T) {
 	opts := isolatedOptions(t)
 	listener, e := net.Listen("tcp4", opts.app.Listen)
