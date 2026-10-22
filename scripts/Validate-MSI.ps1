@@ -42,8 +42,10 @@ try {
   }
   $marker=@(Read-MsiRows 'SELECT `Value` FROM `Property` WHERE `Property`=''EndpointAIDLPLogMarker''' 1)
   if ($marker.Count -ne 1 -or $marker[0][0] -ne "EndpointAIDLP-Windows-Go-$ProductVersion") { throw 'Go MSI log marker mismatch.' }
-  $overwrite=@(Read-MsiRows 'SELECT `Value` FROM `Property` WHERE `Property`=''REINSTALLMODE''' 1)
-  if ($overwrite.Count -ne 1 -or $overwrite[0][0] -ne 'amus') { throw 'Go MSI must replace the versioned .NET service key file during migration.' }
+  $overwrite=@(Read-MsiRows 'SELECT `Type`, `Source`, `Target` FROM `CustomAction` WHERE `Action`=''SetGoMigrationOverwrite''' 3)
+  $overwriteSequence=@(Read-MsiRows 'SELECT `Condition`, `Sequence` FROM `InstallExecuteSequence` WHERE `Action`=''SetGoMigrationOverwrite''' 2)
+  $costSequence=@(Read-MsiRows 'SELECT `Sequence` FROM `InstallExecuteSequence` WHERE `Action`=''CostInitialize''' 1)
+  if ($overwrite.Count -ne 1 -or $overwrite[0][0] -ne '51' -or $overwrite[0][1] -ne 'REINSTALLMODE' -or $overwrite[0][2] -ne 'amus' -or $overwriteSequence.Count -ne 1 -or $overwriteSequence[0][0] -ne 'WIX_UPGRADE_DETECTED' -or [int]$overwriteSequence[0][1] -ge [int]$costSequence[0][0]) { throw 'Go MSI must replace the versioned .NET service key file during migration before costing.' }
   $service=@(Read-MsiRows 'SELECT `Name`, `Arguments` FROM `ServiceInstall`' 2)
   if ($service.Count -ne 1 -or $service[0][0] -ne 'SfEndpointAIProxy') { throw 'MSI service identity mismatch.' }
   $gatewayMatch=[regex]::Match($service[0][1],'(?:^|\s)--gateway-origin=(\S+)')

@@ -89,7 +89,8 @@ SYSTEM .NET→用户 Go、SYSTEM Go→用户 .NET。单次 SYSTEM 计划任务�
 
 原生 r7 升级在预定注入之前的 verify_service_path 失败：旧 .NET PE 文件版本 0.1.22.0，
 Go PE 无文件版本；MSI 将新服务组件计划为 Action: Null，导致旧服务卸载后没有创建新服务。
-Go MSI 单独设置 REINSTALLMODE=amus，仅对该包正常选择的载荷使用强制覆盖规则；不伪造 PE 文件版本。
+Go MSI 仅在 WIX_UPGRADE_DETECTED 时、CostInitialize 之前临时设置 REINSTALLMODE=amus，
+仅对该包正常选择的载荷使用强制覆盖规则；不在 Property 表永久设置，不伪造 PE 文件版本。
 静态验证要求该规则，实际受控回滚与正常升级仍须用新 MSI 重验。
 r7 自然失败后，旧 0.1.22 注册、旧二进制摘要、服务健康与 Codex 配置均确认恢复；这不等于预定故障点通过。
 重新打包可复用 r7 已通过全量 Go 测试和 vet 的逐字节相同 Go 载荷，必须同时记录载荷源码提交、

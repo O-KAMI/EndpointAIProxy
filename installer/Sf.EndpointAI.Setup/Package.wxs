@@ -35,7 +35,7 @@
     <Property Id="MsiLogging" Value="voicewarmup!" />
     <?ifdef ProxyEnableDSH?>
     <!-- Go has no PE file version; replace the older versioned .NET key file. -->
-    <Property Id="REINSTALLMODE" Value="amus" />
+    <CustomAction Id="SetGoMigrationOverwrite" Property="REINSTALLMODE" Value="amus" />
     <?endif?>
     <Property Id="EndpointAIDLPLogMarker" Value="$(var.EndpointAIDLPLogMarker)" />
 
@@ -161,6 +161,9 @@
                   Return="check" />
 
     <InstallExecuteSequence>
+      <?ifdef ProxyEnableDSH?>
+      <Custom Action="SetGoMigrationOverwrite" Before="CostInitialize" Condition="WIX_UPGRADE_DETECTED" />
+      <?endif?>
       <Custom Action="PreflightLegacy" Before="InstallValidate" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
       <Custom Action="SnapshotConfiguration" After="InstallValidate" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
       <Custom Action="RollbackConfiguration" Before="QuiesceLegacy" Condition="NOT REMOVE~=&quot;ALL&quot; AND (NOT Installed OR REINSTALL)" />
