@@ -45,11 +45,11 @@ function Assert-ProductionMsi([string]$Path, [string]$ExpectedVersion = '0.1.22'
   function Read-Cell([string]$Sql) {
     $view = $database.OpenView($Sql)
     try {
-      $view.Execute()
+      $null=$view.Execute()
       $record = $view.Fetch()
       if ($null -eq $record) { throw 'MSI metadata row missing.' }
-      return $record.StringData(1)
-    } finally { $view.Close() }
+      $cell=$record.StringData(1);[Runtime.InteropServices.Marshal]::FinalReleaseComObject($record)|Out-Null;return $cell
+    } finally { $null=$view.Close();[Runtime.InteropServices.Marshal]::FinalReleaseComObject($view)|Out-Null }
   }
   try {
     if ((Read-Cell "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductVersion'") -ne $ExpectedVersion) { throw 'MSI version mismatch.' }

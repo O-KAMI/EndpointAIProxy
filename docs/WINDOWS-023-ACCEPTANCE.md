@@ -71,3 +71,8 @@ ACL 比较保留受保护标志和完整访问条目，仅不再把 Windows 自�
 Go MSI 在 InstallInitialize 后先执行回滚登记与停服快照脚本，通过提前的 InstallExecute 执行，
 随后卸载旧产品，再进入 ProcessComponents 和新文件安装。此顺序避免 ICE63，保留同一 MSI 事务内的恢复；
 静态序列校验必须验证上述实际表顺序，原生故障回滚仍待验。
+
+Windows Installer COM 的 Execute/Close 返回值显式丢弃，避免空返回值混入版本和表行查询；
+查询记录及视图显式释放。原生 PowerShell 5.1 已对 r4 MSI 复核版本、事务序列和五项载荷清单通过。
+管理员只读基线的在线 SQLite 备份完整性为 ok，所有历史 Codex 路由数为 0；
+该在线数据库备份不代替停服后一致性快照和恢复演练。

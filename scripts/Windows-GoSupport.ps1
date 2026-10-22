@@ -54,6 +54,6 @@ function Get-MsiProductVersion([string]$Path) {
  $database=$installer.OpenDatabase([IO.Path]::GetFullPath($Path),0)
  try {
   $view=$database.OpenView('SELECT `Value` FROM `Property` WHERE `Property`=''ProductVersion''')
-  try {$view.Execute();$record=$view.Fetch();if($null -eq $record){throw 'MSI version missing.'};return $record.StringData(1)}finally{$view.Close()}
+  try {$null=$view.Execute();$record=$view.Fetch();if($null -eq $record){throw 'MSI version missing.'};$cell=$record.StringData(1);[Runtime.InteropServices.Marshal]::FinalReleaseComObject($record)|Out-Null;return $cell}finally{$null=$view.Close();[Runtime.InteropServices.Marshal]::FinalReleaseComObject($view)|Out-Null}
  } finally {[Runtime.InteropServices.Marshal]::FinalReleaseComObject($database)|Out-Null;[Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)|Out-Null}
 }

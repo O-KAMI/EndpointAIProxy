@@ -19,13 +19,14 @@ $database=$installer.OpenDatabase($MsiFile,0)
 function Read-MsiRows([string]$Sql, [int]$Columns) {
   $view=$database.OpenView($Sql)
   try {
-    $view.Execute()
+    $null=$view.Execute()
     while ($null -ne ($record=$view.Fetch())) {
       $cells=@()
       for ($index=1; $index -le $Columns; $index++) { $cells += $record.StringData($index) }
+      [Runtime.InteropServices.Marshal]::FinalReleaseComObject($record)|Out-Null
       ,$cells
     }
-  } finally { $view.Close() }
+  } finally { $null=$view.Close();[Runtime.InteropServices.Marshal]::FinalReleaseComObject($view)|Out-Null }
 }
 try {
   $files=@(Read-MsiRows 'SELECT `File`, `FileName` FROM `File`' 2)

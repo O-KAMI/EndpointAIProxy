@@ -19,8 +19,8 @@ function Read-Package([string]$Path) {
  try {
   $result=@{Path=$Path}
   foreach($name in @('ProductCode','ProductVersion','UpgradeCode')) {
-   $view=$db.OpenView(('SELECT `Value` FROM `Property` WHERE `Property`='''+$name+''''));$view.Execute();$row=$view.Fetch()
-   if($null -eq $row){throw 'MSI identity missing.'};$result[$name]=$row.StringData(1);$view.Close()
+   $view=$db.OpenView(('SELECT `Value` FROM `Property` WHERE `Property`='''+$name+''''));$null=$view.Execute();$row=$view.Fetch()
+   if($null -eq $row){throw 'MSI identity missing.'};$result[$name]=$row.StringData(1);[Runtime.InteropServices.Marshal]::FinalReleaseComObject($row)|Out-Null;$null=$view.Close();[Runtime.InteropServices.Marshal]::FinalReleaseComObject($view)|Out-Null
   }
   if($result.UpgradeCode.ToUpperInvariant() -ne '{643CFDA1-3A12-4C57-BD65-5F6106CBAB90}') { throw 'Unrelated MSI product.' }
   if($db.SummaryInformation(0).Property(7) -notlike 'x64;*'){throw 'Unsupported MSI architecture.'}
