@@ -33,6 +33,10 @@
     <MediaTemplate EmbedCab="yes" CompressionLevel="low" />
     <Property Id="MSIDISABLERMRESTART" Value="1" />
     <Property Id="MsiLogging" Value="voicewarmup!" />
+    <?ifdef ProxyEnableDSH?>
+    <!-- Go has no PE file version; replace the older versioned .NET key file. -->
+    <Property Id="REINSTALLMODE" Value="amus" />
+    <?endif?>
     <Property Id="EndpointAIDLPLogMarker" Value="$(var.EndpointAIDLPLogMarker)" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">

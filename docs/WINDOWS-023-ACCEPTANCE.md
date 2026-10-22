@@ -86,3 +86,11 @@ Codex 排除和网关 HMAC 的删除服务键回归使用合成值，不导出�
 原生 SYSTEM 合成 DPAPI 已通过：用户 .NET→SYSTEM Go、用户 Go→SYSTEM .NET、
 SYSTEM .NET→用户 Go、SYSTEM Go→用户 .NET。单次 SYSTEM 计划任务退出码为 0，任务已清理。
 构建失败报告仅补充源文件名和行号，不记录凭据或原始异常正文。
+
+原生 r7 升级在预定注入之前的 verify_service_path 失败：旧 .NET PE 文件版本 0.1.22.0，
+Go PE 无文件版本；MSI 将新服务组件计划为 Action: Null，导致旧服务卸载后没有创建新服务。
+Go MSI 单独设置 REINSTALLMODE=amus，仅对该包正常选择的载荷使用强制覆盖规则；不伪造 PE 文件版本。
+静态验证要求该规则，实际受控回滚与正常升级仍须用新 MSI 重验。
+r7 自然失败后，旧 0.1.22 注册、旧二进制摘要、服务健康与 Codex 配置均确认恢复；这不等于预定故障点通过。
+重新打包可复用 r7 已通过全量 Go 测试和 vet 的逐字节相同 Go 载荷，必须同时记录载荷源码提交、
+安装器源码提交、原 MSI 和每个载荷摘要，并证明 go-client 树未变；MSI 本身重新冻结、重新验收。
