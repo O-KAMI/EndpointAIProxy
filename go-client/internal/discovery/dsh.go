@@ -66,16 +66,7 @@ func DSHProfileMetadata(ctx context.Context, profiles []platform.Profile, roots 
 		// Profile manifest version describes the profile package, not the CLI. Never
 		// use it to assert a compatible DSH runtime.
 		md := DSHMetadata{OverlaysUnknown: scanErr != nil}
-		for _, s := range running {
-			if s.sid == p.SID && s.desktopAccount {
-				md.DesktopAccountVerified = true
-			}
-		}
-		for _, s := range running {
-			if s.sid == p.SID && s.kind == DeepSeekHarness && !s.desktopAccount && !s.inspectionUnknown && (s.launchProfile == "desktop" || s.launchOverridesUnknown) {
-				md.DesktopAccountVerified = false
-			}
-		}
+		md.DesktopAccountVerified = scanErr == nil && desktopAccountProvenance(running, p.SID)
 		for _, s := range running {
 			if s.sid == p.SID && s.inspectionUnknown {
 				md.OverlaysUnknown = true
@@ -106,10 +97,28 @@ func DSHProfileMetadata(ctx context.Context, profiles []platform.Profile, roots 
 				md.Version = v
 			}
 		}
-		md.DesktopAccountVerified = md.DesktopAccountVerified && md.Version == "0.2.1-rc.2" && !md.OverlaysUnknown
+		md.DesktopAccountVerified = md.DesktopAccountVerified && md.Version == "0.2.1-rc.2"
 		out[p.SID] = md
 	}
 	return out
+}
+
+func desktopAccountProvenance(running []sample, sid string) bool {
+	host := false
+	for _, s := range running {
+		if s.sid != sid {
+			continue
+		}
+		if s.desktopHost && s.desktopAccount {
+			host = true
+		}
+		// An unidentified Node process affects generic CLI completeness, but is
+		// not evidence of an overlay in the verified packaged Desktop host.
+		if s.kind == DeepSeekHarness && !s.desktopAccount && !s.inspectionUnknown && (s.launchProfile == "desktop" || s.launchOverridesUnknown) {
+			return false
+		}
+	}
+	return host
 }
 
 func dshNPMRoots(p platform.Profile) []string {

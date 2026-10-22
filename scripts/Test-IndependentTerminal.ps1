@@ -14,6 +14,13 @@ chcp 65001 > $null
 $env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'
 . "$PSScriptRoot/Windows-GoSupport.ps1"
 . "$PSScriptRoot/Installer-BuildSupport.ps1"
+function Read-InstallRemnants {
+  $installer=New-Object -ComObject WindowsInstaller.Installer
+  try { $products=@($installer.RelatedProducts('{643CFDA1-3A12-4C57-BD65-5F6106CBAB90}')) }
+  finally { [Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer) | Out-Null }
+  $dataRoot=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'SF/EndpointAIProxy'
+  return @{ registeredProducts=$products.Count; dataPresent=(Test-Path -LiteralPath $dataRoot) }
+}
 $report=@{ schemaVersion=1; phase=$Phase; status='failed'; msiSha256=$ExpectedMsiSha256.ToLowerInvariant(); atUtc=[DateTime]::UtcNow.ToString('o'); evidence=@{}; releaseAcceptance='pending'; pending=@('gateway request correlation','SSE transport evidence','control command receipts','configuration restoration review') }
 $reportFile=$null
 try {
@@ -33,15 +40,20 @@ try {
   if ($Phase -eq 'Prepare') {
     if (Test-Path -LiteralPath (Join-Path $OutputDirectory 'prepared.json')) { throw 'Prepare already recorded; preserve the original baseline.' }
     if (Test-Path -LiteralPath $config -PathType Leaf) { Copy-Item -LiteralPath $config -Destination (Join-Path $phaseDirectory 'codex-config.private.toml') }
-    Write-BuildJson (Join-Path $OutputDirectory 'prepared.json') @{ msiSha256=$report.msiSha256; bootUtc=$boot; servicePresent=($null -ne $service); codexConfigSha256=$report.evidence.codexConfigSha256 }
-    $report.evidence.cleanBeforeInstall=($null -eq $service)
+    $remnants=Read-InstallRemnants
+    $clean=($null -eq $service -and $remnants.registeredProducts -eq 0 -and -not $remnants.dataPresent)
+    Write-BuildJson (Join-Path $OutputDirectory 'prepared.json') @{ msiSha256=$report.msiSha256; bootUtc=$boot; servicePresent=($null -ne $service); cleanBaseline=$clean; codexConfigSha256=$report.evidence.codexConfigSha256 }
+    $report.evidence.cleanBeforeInstall=$clean
   } else {
     $baseline=Get-Content -LiteralPath (Join-Path $OutputDirectory 'prepared.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($baseline.msiSha256 -ne $report.msiSha256) { throw 'Baseline belongs to another MSI.' }
     if ($Phase -in @('Install','Uninstall')) {
       $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
       if (-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Use an elevated shell for the explicitly selected MSI action.' }
-      if ($Phase -eq 'Install' -and $RequireCleanInstall -and ($null -ne $service -or $baseline.servicePresent)) { throw 'Clean install requires a baseline without the existing service.' }
+      if ($Phase -eq 'Install' -and $RequireCleanInstall) {
+        $remnants=Read-InstallRemnants
+        if (-not $baseline.cleanBaseline -or $null -ne $service -or $remnants.registeredProducts -ne 0 -or $remnants.dataPresent) { throw 'Clean install requires no service, related MSI registration or previous data.' }
+      }
       $verb=if ($Phase -eq 'Install') {'/i'} else {'/x'}
       $installLog=Join-Path $phaseDirectory 'msi.private.log'
       $native=Start-Process -FilePath "$env:WINDIR/System32/msiexec.exe" -ArgumentList @($verb,('"'+$MsiFile+'"'),'/qn','/norestart','/L*v',('"'+$installLog+'"')) -WindowStyle Hidden -Wait -PassThru
@@ -52,13 +64,19 @@ try {
     }
     if ($Phase -eq 'Uninstall') {
       if ($null -ne $service) { throw 'Service remains after uninstall.' }
+      $remaining=@(Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object {$_.LocalPort -eq 18080})
+      if ($remaining.Count -ne 0) { throw 'Proxy port remains after uninstall.' }
       $report.evidence.serviceRemoved=$true
+      $report.evidence.proxyPortReleased=$true
       $restoredDigest=$null
       if (Test-Path -LiteralPath $config -PathType Leaf) { $restoredDigest=Get-Sha256 $config }
       $report.evidence.codexOriginalDigestRestored=($restoredDigest -eq $baseline.codexConfigSha256)
       if (-not $report.evidence.codexOriginalDigestRestored) { throw 'Review configuration restoration; do not overwrite later user changes.' }
     } else {
       if ($null -eq $service -or $service.State -ne 'Running' -or $service.StartMode -ne 'Auto') { throw 'Expected automatic running service.' }
+      $listeners=@(Get-NetTCPConnection -LocalPort 18080 -State Listen -ErrorAction Stop)
+      if ($listeners.Count -ne 1 -or $listeners[0].OwningProcess -ne $service.ProcessId -or $listeners[0].LocalAddress -ne '127.0.0.1') { throw 'Service and loopback listener identity mismatch.' }
+      $report.evidence.serviceOwnsProxyPort=$true
       $health=Invoke-RestMethod -Uri 'http://127.0.0.1:18080/healthz' -UseBasicParsing -TimeoutSec 10
       if ($health.status -ne 'ok' -or $health.implementation -ne 'go' -or $health.clientVersion -ne '0.2.3' -or $health.installationPending -eq $true) { throw 'Candidate health mismatch.' }
       $report.evidence.serviceVersion=$health.clientVersion
@@ -79,7 +97,9 @@ try {
         $eventPath=Join-Path $phaseDirectory 'codex-events.private.jsonl'
         $events=[IO.StreamWriter]::new($eventPath,$false,$utf8)
         $completed=$false; $matched=$false; $toolUsed=$false
+        $nativeErrorPreference=$ErrorActionPreference
         try {
+          $ErrorActionPreference='Continue'
           & $codex.Source exec --ephemeral --sandbox read-only --skip-git-repo-check --json --cd $work "Reply with exactly $nonce. Do not use tools, read files, or run commands." 2>&1 | ForEach-Object {
             $line=[string]$_; $events.WriteLine($line); $events.Flush()
             try {
@@ -90,7 +110,7 @@ try {
             } catch { } # Keep non-JSON diagnostics in the protected raw file only.
           }
           $report.evidence.codexExitCode=$LASTEXITCODE
-        } finally { $events.Dispose() }
+        } finally { $ErrorActionPreference=$nativeErrorPreference; $events.Dispose() }
         $report.evidence.nonce=$nonce; $report.evidence.turnCompleted=$completed; $report.evidence.expectedReply=$matched; $report.evidence.toolUsed=$toolUsed
         if ($report.evidence.codexExitCode -ne 0 -or -not $completed -or -not $matched -or $toolUsed) { throw 'Codex request check failed.' }
       }

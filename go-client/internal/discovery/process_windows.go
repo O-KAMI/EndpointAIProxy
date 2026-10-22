@@ -51,6 +51,7 @@ func processSamples(ctx context.Context, profiles []platform.Profile) ([]sample,
 					launchUnknown := true
 					strength := 2
 					desktopAccount := false
+					desktopHost := false
 					if kind == DeepSeekHarness && !isNodeExecutable(path) {
 						info, known := desktopCache[path]
 						if !known {
@@ -65,6 +66,7 @@ func processSamples(ctx context.Context, profiles []platform.Profile) ([]sample,
 								for _, profile := range profiles {
 									if profile.SID == sid && dshDesktopHostArgs(path, profile.Home, args) {
 										version, launchProfile, launchUnknown, desktopAccount = info.version, "desktop", false, true
+										desktopHost = true
 									}
 								}
 								for _, arg := range args[1:] {
@@ -103,7 +105,7 @@ func processSamples(ctx context.Context, profiles []platform.Profile) ([]sample,
 					}
 					for _, p := range profiles {
 						if p.SID == sid || strings.HasPrefix(strings.ToLower(path), strings.ToLower(p.Home+`\`)) {
-							out = append(out, sample{sid: p.SID, kind: kind, collector: "running-process", path: fmt.Sprintf("%s (PID %d)", path, entry.ProcessID), strength: strength, version: version, launchProfile: launchProfile, launchOverridesUnknown: launchUnknown, desktopAccount: desktopAccount})
+							out = append(out, sample{sid: p.SID, kind: kind, collector: "running-process", path: fmt.Sprintf("%s (PID %d)", path, entry.ProcessID), strength: strength, version: version, launchProfile: launchProfile, launchOverridesUnknown: launchUnknown, desktopAccount: desktopAccount, desktopHost: desktopHost})
 							break
 						}
 					}

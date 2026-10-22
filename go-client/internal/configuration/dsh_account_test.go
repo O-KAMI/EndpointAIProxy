@@ -119,3 +119,32 @@ func TestDesktopAccountRequiresVerifiedRuntimeAndCanonicalProfile(t *testing.T) 
 		})
 	}
 }
+
+func TestDesktopHostProofDoesNotAuthorizeAnotherDSHRoot(t *testing.T) {
+	m, p, _, _ := desktopAccountFixture(t)
+	root := filepath.Join(p.Home, "another-dsh-home")
+	p.DSHHomes = []string{root}
+	path := writeDSHFixture(t, p, root, "desktop", "- id: ui-chat\n  config: {theme: retained}\n")
+	writeFixture(t, filepath.Join(filepath.Dir(path), "cordis.yml"), "[]\n")
+	before, _ := os.ReadFile(path)
+	docs, err := dshDocuments(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, doc := range docs {
+		if doc.path != path {
+			continue
+		}
+		found = true
+		results, err := m.dshAccountProfile(context.Background(), p, doc, false)
+		if err == nil || len(results) != 1 || results[0].ErrorCode != "DSH_DESKTOP_ACCOUNT_UNVERIFIED" {
+			t.Fatal("Desktop proof escaped its profile", results, err)
+		}
+	}
+	after, _ := os.ReadFile(path)
+	routes, _ := m.Store.ListRoutes(context.Background())
+	if !found || string(before) != string(after) || len(routes) != 0 {
+		t.Fatal("unverified profile modified or routed")
+	}
+}

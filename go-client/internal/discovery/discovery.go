@@ -52,6 +52,7 @@ type sample struct {
 	launchProfile            string
 	launchOverridesUnknown   bool
 	desktopAccount           bool
+	desktopHost              bool
 	inspectionUnknown        bool // local completeness signal, never inventory evidence
 }
 

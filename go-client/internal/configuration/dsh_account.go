@@ -236,13 +236,14 @@ func (m *Manager) dshAccountProfile(ctx context.Context, p Profile, doc *dshDocu
 		}
 		return m.detachAccount(ctx, p, doc, current, record, journalPath, result)
 	}
-	if !p.DSHDesktopAccountVerified || p.DSHVersion != DSHDesktopSupportedVersion {
+	profileRelative, profileErr := filepath.Rel(filepath.Join(p.Home, ".dsh", "profiles", "desktop"), filepath.Dir(doc.path))
+	if !p.DSHDesktopAccountVerified || p.DSHVersion != DSHDesktopSupportedVersion || profileErr != nil || profileRelative != "." {
 		return fail("DSH_DESKTOP_ACCOUNT_UNVERIFIED")
 	}
 	if doc.referencesUnknown {
 		return fail("DSH_ACCOUNT_PATCH_AMBIGUOUS")
 	}
-	if doc.issue != "" && doc.issue != "DSH_VERSION_UNVERIFIED" {
+	if doc.issue != "" && doc.issue != "DSH_VERSION_UNVERIFIED" && doc.issue != "DSH_COMMAND_OVERLAY_UNKNOWN" {
 		return fail(doc.issue)
 	}
 	basePath := filepath.Join(filepath.Dir(doc.path), "cordis.yml")

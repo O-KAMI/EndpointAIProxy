@@ -21,7 +21,8 @@ $test = 'D:\EndpointAI-Acceptance\scripts\Test-IndependentTerminal.ps1'
 ```
 
 Prepare 记录启动时间、原配置摘要及服务是否存在，私有备份仅保存在受限目录。
-干净首装要求 Prepare 时没有旧服务；仍有旧服务时应另行执行覆盖升级验收。
+干净首装要求 Prepare 和 Install 时均没有旧服务、相关 MSI 注册及遗留数据目录；
+检测到旧安装时应另行执行覆盖升级验收，不能删除已有数据来伪造干净环境。
 脚本不修改登录材料，也不自动重启电脑。它使用已安装 Codex CLI 的当前配置发出带唯一 nonce 的请求，
 不覆盖 provider，不指定替代模型，并限制为只读、临时会话。
 命令参数依据[官方 Codex 文档](https://learn.chatgpt.com/docs/developer-commands#codex-exec)和本机 CLI 帮助核对。

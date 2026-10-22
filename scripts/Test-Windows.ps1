@@ -77,6 +77,8 @@ try {
     do {
       $service=Get-CimInstance -ClassName Win32_Service -Filter "Name='SfEndpointAIProxy'"
       if ($null -eq $service -or $service.State -ne 'Running' -or $service.ProcessId -eq 0) { throw 'Native service is not running.' }
+      $listeners=@(Get-NetTCPConnection -LocalPort 18080 -State Listen -ErrorAction Stop)
+      if ($listeners.Count -ne 1 -or $listeners[0].OwningProcess -ne $service.ProcessId -or $listeners[0].LocalAddress -ne '127.0.0.1') { throw 'Native service and loopback listener identity mismatch.' }
       $health=Invoke-RestMethod -Uri 'http://127.0.0.1:18080/healthz' -TimeoutSec 10 -UseBasicParsing
       if ($health.status -ne 'ok' -or $health.implementation -ne 'go' -or $health.clientVersion -ne $ProductVersion -or $health.installationPending -eq $true) { throw 'Native health implementation/version mismatch.' }
       $worker=Get-Process -Id $service.ProcessId -ErrorAction Stop

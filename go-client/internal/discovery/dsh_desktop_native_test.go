@@ -31,6 +31,11 @@ func TestInstalledWindowsDesktopAccountRuntime(t *testing.T) {
 		if filepath.Clean(profile.Home) == filepath.Clean(os.Getenv("USERPROFILE")) {
 			metadata := DSHProfileMetadata(ctx, []platform.Profile{profile}, nil)[profile.SID]
 			if !metadata.DesktopAccountVerified {
+				samples, scanErr := processSamples(ctx, []platform.Profile{profile})
+				t.Logf("process inspection failed=%t", scanErr != nil)
+				for _, s := range samples {
+					t.Logf("kind=%d desktopProfile=%t overlayUnknown=%t inspectionUnknown=%t desktopRuntime=%t desktopHost=%t", s.kind, s.launchProfile == "desktop", s.launchOverridesUnknown, s.inspectionUnknown, s.desktopAccount, s.desktopHost)
+				}
 				t.Fatalf("Desktop launch provenance not verified: %+v", metadata)
 			}
 			return
