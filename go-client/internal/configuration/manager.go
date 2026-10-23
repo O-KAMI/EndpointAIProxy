@@ -19,13 +19,14 @@ import (
 )
 
 type Profile struct {
-	SID, Home, Roaming, Local string
-	SearchPaths               []string
-	DSHHomes                  []string
-	DSHOverlaysUnknown        bool
-	DSHVersion                string
-	DSHPiAIVersion            string
-	DSHDesktopAccountVerified bool
+	SID, Home, Roaming, Local    string
+	SearchPaths                  []string
+	DSHHomes                     []string
+	DSHOverlaysUnknown           bool
+	DSHVersion                   string
+	DSHPiAIVersion               string
+	DSHDesktopAccountVerified    bool
+	DSHDesktopReferencesVerified bool
 }
 type Result struct {
 	SID, Path, ProviderID, RouteID, Mode, Ownership, ErrorCode string
@@ -598,13 +599,13 @@ func (m *Manager) references(ctx context.Context, p Profile) ([]string, error) {
 		return nil, e
 	}
 	if m.EnableDSH || len(roots) > 0 {
-		if p.DSHOverlaysUnknown {
-			return nil, problem("DSH_ROUTE_REFERENCES_UNVERIFIED")
-		}
 		p.DSHHomes = append(p.DSHHomes, roots...)
 		docs, e := dshDocuments(p)
 		if e != nil {
 			return nil, e
+		}
+		if p.DSHOverlaysUnknown && len(docs) == 0 {
+			return nil, problem("DSH_ROUTE_REFERENCES_UNVERIFIED")
 		}
 		for _, doc := range docs {
 			if doc.profile == "desktop" && p.DSHVersion == DSHDesktopSupportedVersion {
@@ -615,7 +616,7 @@ func (m *Manager) references(ctx context.Context, p Profile) ([]string, error) {
 				refs = append(refs, accountRefs...)
 				continue
 			}
-			if doc.issue != "" || doc.referencesUnknown {
+			if p.DSHOverlaysUnknown || doc.issue != "" || doc.referencesUnknown {
 				return nil, problem("DSH_ROUTE_REFERENCES_UNVERIFIED")
 			}
 			for _, candidate := range doc.candidates {

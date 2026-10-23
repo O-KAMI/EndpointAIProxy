@@ -407,6 +407,21 @@ func startupFailure(err error) map[string]any {
 	return observability.Fields(d)
 }
 
+func maintenanceFailureFields(stage string, err error) map[string]any {
+	d := observability.Classify(err)
+	d.Stage, d.Code = stage, "CLIENT_MAINTENANCE_FAILED"
+	var mutation *configuration.MutationError
+	if errors.As(err, &mutation) && len(mutation.Code) > 0 && len(mutation.Code) <= 80 && strings.Trim(mutation.Code, "ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789") == "" {
+		d.Code = mutation.Code
+	}
+	return observability.Fields(d)
+}
+
+func maintenanceFailure(stage string, err error) int {
+	_ = json.NewEncoder(os.Stderr).Encode(maintenanceFailureFields(stage, err))
+	return 1
+}
+
 func maintenance(opts options) int {
 	admin, e := platform.IsElevated()
 	if e != nil || !admin {
@@ -494,34 +509,34 @@ func maintenance(opts options) int {
 	}
 	lock, e := instance.Acquire(filepath.Join(opts.app.DataRoot, "client.lock"))
 	if e != nil {
-		return 1
+		return maintenanceFailure("instance_lock", e)
 	}
 	defer lock.Close()
 	p, e := protector(opts.app.DataRoot)
 	if e != nil {
-		return 1
+		return maintenanceFailure("machine_key", e)
 	}
 	store, e := state.Open(filepath.Join(opts.app.DataRoot, "state", "client.db"), p)
 	if e != nil {
-		return 1
+		return maintenanceFailure("state_open", e)
 	}
 	defer store.Close()
 	ps, e := profiles(opts)(ctx)
 	if e != nil {
-		return 1
+		return maintenanceFailure("profile_discovery", e)
 	}
 	m := configuration.Manager{Store: store, Origin: "http://" + opts.app.Listen, BackupRoot: filepath.Join(opts.app.DataRoot, "config-backups")}
 	cp, e := app.PrepareConfigurationProfiles(ctx, &m, ps, opts.app.DSHHomes, true)
 	if e != nil {
-		return 1
+		return maintenanceFailure("configuration_profiles", e)
 	}
 	results, e := m.DetachAll(ctx, cp)
 	if e != nil {
-		return 1
+		return maintenanceFailure("detach_configuration", e)
 	}
 	for _, r := range results {
 		if r.ErrorCode != "" && r.Status != int(contracts.RouteStatusUnsupported) {
-			return 1
+			return maintenanceFailure("detach_result", &configuration.MutationError{Code: r.ErrorCode})
 		}
 	}
 	return 0

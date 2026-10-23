@@ -171,7 +171,7 @@ func accountOriginal(rows map[string]*yaml.Node) (string, string, error) {
 // version gate. Inspect all literal URLs so unrelated plugins can retain routes.
 func desktopAccountReferences(p Profile, doc *dshDocument) ([]string, error) {
 	relative, err := filepath.Rel(filepath.Join(p.Home, ".dsh", "profiles", "desktop"), filepath.Dir(doc.path))
-	if !p.DSHDesktopAccountVerified || p.DSHOverlaysUnknown || relative != "." || err != nil || doc.referencesUnknown || (doc.issue != "" && doc.issue != "DSH_VERSION_UNVERIFIED") {
+	if !p.DSHDesktopAccountVerified || (p.DSHOverlaysUnknown && !p.DSHDesktopReferencesVerified) || relative != "." || err != nil || doc.referencesUnknown || (doc.issue != "" && doc.issue != "DSH_VERSION_UNVERIFIED" && doc.issue != "DSH_COMMAND_OVERLAY_UNKNOWN") {
 		return nil, problem("DSH_ROUTE_REFERENCES_UNVERIFIED")
 	}
 	if _, err = accountRows(doc); err != nil {

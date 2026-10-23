@@ -13,10 +13,11 @@ import (
 const DSHSupportedVersion = "0.2.1-alpha.5"
 
 type DSHMetadata struct {
-	DSHPiAIVersion         string
-	Version                string
-	OverlaysUnknown        bool
-	DesktopAccountVerified bool
+	DSHPiAIVersion            string
+	Version                   string
+	OverlaysUnknown           bool
+	DesktopAccountVerified    bool
+	DesktopReferencesVerified bool
 }
 
 // DSHProfileMetadata reads manifests only. roots must come from trusted deployment
@@ -98,9 +99,19 @@ func DSHProfileMetadata(ctx context.Context, profiles []platform.Profile, roots 
 			}
 		}
 		md.DesktopAccountVerified = md.DesktopAccountVerified && md.Version == "0.2.1-rc.2"
+		md.DesktopReferencesVerified = md.DesktopAccountVerified && desktopReferenceScopeKnown(running, p.SID)
 		out[p.SID] = md
 	}
 	return out
+}
+
+func desktopReferenceScopeKnown(running []sample, sid string) bool {
+	for _, s := range running {
+		if s.sid == sid && s.kind == DeepSeekHarness && !s.desktopAccount {
+			return false
+		}
+	}
+	return true
 }
 
 func desktopAccountProvenance(running []sample, sid string) bool {

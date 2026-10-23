@@ -49,6 +49,7 @@ func TestDesktopAccountReferenceScanRemainsConservative(t *testing.T) {
 				p.DSHDesktopAccountVerified = false
 			case "overlay":
 				p.DSHOverlaysUnknown = true
+				p.DSHDesktopAccountVerified = false
 			case "base":
 				writeFixture(t, filepath.Join(filepath.Dir(path), "cordis.yml"), "- id: unknown\n")
 			case "include":
@@ -77,5 +78,25 @@ func TestDesktopAccountReferenceScanRemainsConservative(t *testing.T) {
 				t.Fatal("unowned URL was modified")
 			}
 		})
+	}
+}
+
+func TestVerifiedDesktopReferencesIgnoreUnrelatedNodeAmbiguity(t *testing.T) {
+	m, p, _, _ := desktopAccountFixture(t)
+	p.DSHOverlaysUnknown = true
+	p.DSHDesktopReferencesVerified = true
+	// Desktop provenance independently verifies its packaged host and rejects
+	// conflicting Desktop launches; generic Node completeness is a CLI concern.
+	if _, err := m.references(context.Background(), p); err != nil {
+		t.Fatal("verified Desktop was blocked by generic CLI completeness", err)
+	}
+	p.DSHDesktopReferencesVerified = false
+	if _, err := m.references(context.Background(), p); err == nil {
+		t.Fatal("unknown DSH launch scope was treated as complete")
+	}
+	p.DSHDesktopReferencesVerified = true
+	writeDSHFixture(t, p, filepath.Join(p.Home, ".dsh"), "web", dshDeepSeekFixture)
+	if _, err := m.references(context.Background(), p); err == nil {
+		t.Fatal("unverified non-Desktop profile was treated as complete")
 	}
 }

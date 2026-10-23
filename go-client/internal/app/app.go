@@ -255,6 +255,7 @@ func PrepareConfigurationProfiles(ctx context.Context, m *configuration.Manager,
 		out[i].DSHVersion = meta.Version
 		out[i].DSHPiAIVersion = meta.DSHPiAIVersion
 		out[i].DSHDesktopAccountVerified = meta.DesktopAccountVerified
+		out[i].DSHDesktopReferencesVerified = meta.DesktopReferencesVerified
 		out[i].DSHOverlaysUnknown = !ok || meta.OverlaysUnknown
 	}
 	return out, nil
