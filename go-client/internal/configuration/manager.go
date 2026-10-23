@@ -607,6 +607,14 @@ func (m *Manager) references(ctx context.Context, p Profile) ([]string, error) {
 			return nil, e
 		}
 		for _, doc := range docs {
+			if doc.profile == "desktop" && p.DSHVersion == DSHDesktopSupportedVersion {
+				accountRefs, err := desktopAccountReferences(p, doc)
+				if err != nil {
+					return nil, err
+				}
+				refs = append(refs, accountRefs...)
+				continue
+			}
 			if doc.issue != "" || doc.referencesUnknown {
 				return nil, problem("DSH_ROUTE_REFERENCES_UNVERIFIED")
 			}

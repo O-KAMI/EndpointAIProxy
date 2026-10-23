@@ -167,6 +167,44 @@ func accountOriginal(rows map[string]*yaml.Node) (string, string, error) {
 	return strings.TrimRight(origin, "/"), path, nil
 }
 
+// Account profiles use the Desktop contract, rather than the legacy alpha SDK
+// version gate. Inspect all literal URLs so unrelated plugins can retain routes.
+func desktopAccountReferences(p Profile, doc *dshDocument) ([]string, error) {
+	relative, err := filepath.Rel(filepath.Join(p.Home, ".dsh", "profiles", "desktop"), filepath.Dir(doc.path))
+	if !p.DSHDesktopAccountVerified || p.DSHOverlaysUnknown || relative != "." || err != nil || doc.referencesUnknown || (doc.issue != "" && doc.issue != "DSH_VERSION_UNVERIFIED") {
+		return nil, problem("DSH_ROUTE_REFERENCES_UNVERIFIED")
+	}
+	if _, err = accountRows(doc); err != nil {
+		return nil, err
+	}
+	basePath := filepath.Join(filepath.Dir(doc.path), "cordis.yml")
+	base, err := dshRead(basePath)
+	var tree yaml.Node
+	if err != nil || !dshSafePath(p.Home, basePath) || dshParse(base, &tree) != nil || len(tree.Content[0].Content) != 0 {
+		return nil, problem("DSH_ROUTE_REFERENCES_UNVERIFIED")
+	}
+	var refs []string
+	var walk func(*yaml.Node) error
+	walk = func(node *yaml.Node) error {
+		if value := yamlString(node); value != "" {
+			if strings.Contains(value, "${") || strings.Contains(value, "{{") {
+				return problem("DSH_ROUTE_REFERENCES_UNVERIFIED")
+			}
+			if dshValidURL(value) {
+				refs = append(refs, value)
+			}
+		}
+		for _, child := range node.Content {
+			if err := walk(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	err = walk(&doc.tree)
+	return refs, err
+}
+
 func (m *Manager) accountJournalPath(identity string) string {
 	digest := sha256.Sum256([]byte(identity))
 	return filepath.Join(m.BackupRoot, "dsh-account."+hex.EncodeToString(digest[:])+".json")
