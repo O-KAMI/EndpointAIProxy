@@ -79,6 +79,10 @@ func Claude(content []byte, target string, remote bool) (Transform, error) {
 // parser's decoded key paths handle quoted/dotted keys and literal strings;
 // only the selected value's byte range changes, preserving the user's layout.
 func Codex(content []byte, target string, remote bool) (Transform, error) {
+	return codex(content, target, remote, func() (string, error) { return codexAPIOrigin, nil })
+}
+
+func codex(content []byte, target string, remote bool, defaultOrigin func() (string, error)) (Transform, error) {
 	if e := validateTarget(target, remote); e != nil {
 		return Transform{}, e
 	}
@@ -124,7 +128,11 @@ func Codex(content []byte, target string, remote bool) (Transform, error) {
 		return Transform{}, problem("CODEX_PROVIDER_BASE_URL_MISSING")
 	}
 	if len(path) == 1 && strings.TrimSpace(previous) == "" {
-		previous = "https://api.openai.com/v1"
+		var err error
+		previous, err = defaultOrigin()
+		if err != nil {
+			return Transform{}, err
+		}
 	}
 	if strings.TrimRight(previous, "/") == target {
 		return Transform{content, previous, target, false}, nil
@@ -251,7 +259,7 @@ func ccTransform(app, settings, target string, remote bool) (Transform, error) {
 		if e := json.Unmarshal(root["config"], &config); e != nil {
 			return Transform{}, problem("CCSWITCH_CODEX_CONFIG_MISSING")
 		}
-		t, e := Codex([]byte(config), target, remote)
+		t, e := codex([]byte(config), target, remote, func() (string, error) { return codexAuthOrigin(root["auth"]) })
 		if e != nil {
 			return t, e
 		}

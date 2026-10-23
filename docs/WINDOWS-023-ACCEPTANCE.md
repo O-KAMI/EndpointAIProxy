@@ -6,6 +6,17 @@
 
 本记录区分代码实现、合成回归和真实终端结果。当前仍是开发候选，不能推广。
 
+2026-10-23 本机 Codex 预检发现 r12 的必验阻断：ChatGPT 登录且未显式配置入口时，
+客户端错误地使用 API Key 模式默认地址 `https://api.openai.com/v1`，可能误判白名单直连。
+实际 CLI 0.144.1 的进程级 CONNECT 探针仅观察到 `chatgpt.com:443`，未解密 TLS、
+未记录凭据、未更改全局配置；进程级 `openai_base_url` 探针确认该字段能控制实际请求入口。
+官方 ChatGPT 网关契约要求 `/models`、`/responses` 对应 `https://chatgpt.com/backend-api/codex`。
+修复按用户 auth.json 或各 CC Switch provider 自己的 auth_mode 识别默认地址，仅只读登录模式，
+不改写认证文件；显式 URL 优先，未知模式拒绝接管。无认证元数据时保留原 API 默认行为。
+发现、接管及引用检查使用相同识别路径；新候选须重新构建和验收。r12 长稳和独立终端证据
+仅属于 r12，不能转记为修复后 MSI 的放行证明。本机已获授权测试 Codex，备份和恢复脚本已准备；
+尚未启用本机 Codex 接管，原排除配置仍生效。
+
 r9 原生卸载返回 1603，维护解除接管失败后已恢复原服务；Codex 保护校验通过。
 隔离回归复现 CC Switch 未接管的 Codex provider 在解除阶段误入注入地址校验，
 返回 `INJECTED_BASE_URL_INVALID`。解除阶段现与直接配置路径一致，跳过无既有接管记录的

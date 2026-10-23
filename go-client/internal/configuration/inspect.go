@@ -59,7 +59,7 @@ func (m *Manager) Inspect(ctx context.Context, profiles []Profile) ([]Endpoint, 
 			}
 			live := ""
 			if exists {
-				t, err := transform(app, content, "http://127.0.0.1:18080/r/inspection", false)
+				t, err := profileTransform(p, app, content, "http://127.0.0.1:18080/r/inspection", false)
 				if err != nil {
 					errs = append(errs, err)
 					continue

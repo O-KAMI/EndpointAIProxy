@@ -203,7 +203,7 @@ func (m *Manager) direct(ctx context.Context, p Profile, app string, detach bool
 	if e != nil {
 		return r, e
 	}
-	inspect, e := transform(app, content, "http://127.0.0.1:18080/r/inspection", false)
+	inspect, e := profileTransform(p, app, content, "http://127.0.0.1:18080/r/inspection", false)
 	if e != nil {
 		return r, e
 	}
@@ -215,7 +215,7 @@ func (m *Manager) direct(ctx context.Context, p Profile, app string, detach bool
 		return r, nil
 	}
 	r = makeResult(p, path, "direct", agent, d)
-	t, e := transform(app, content, d.target, d.bypass)
+	t, e := profileTransform(p, app, content, d.target, d.bypass)
 	if e != nil {
 		return r, e
 	}
@@ -363,7 +363,7 @@ func (m *Manager) ccApp(ctx context.Context, p Profile, path, app string, cc CCI
 	if e != nil {
 		return nil, e
 	}
-	lt, e := transform(app, live, "http://127.0.0.1:18080/r/inspection", false)
+	lt, e := profileTransform(p, app, live, "http://127.0.0.1:18080/r/inspection", false)
 	if e != nil {
 		return nil, e
 	}
@@ -500,7 +500,7 @@ func (m *Manager) ccApp(ctx context.Context, p Profile, path, app string, cc CCI
 		}
 		if e == nil {
 			var t Transform
-			t, e = transform(app, live, targetCurrent, true)
+			t, e = profileTransform(p, app, live, targetCurrent, true)
 			if e == nil && t.Changed {
 				liveUpdate, e = applyProfileFile(ctx, p, livePath, live, t.Content, m.BackupRoot)
 				liveChanged = liveUpdate.Replaced
@@ -560,7 +560,7 @@ func (m *Manager) referencesBase(ctx context.Context, p Profile) ([]string, erro
 		if e != nil {
 			return nil, e
 		}
-		t, e := transform(app, b, "http://127.0.0.1:18080/r/inspection", false)
+		t, e := profileTransform(p, app, b, "http://127.0.0.1:18080/r/inspection", false)
 		if e != nil {
 			return nil, e
 		}
