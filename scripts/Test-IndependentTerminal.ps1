@@ -60,6 +60,11 @@ try {
       $report.evidence.installerExitCode=$native.ExitCode
       $report.evidence.rebootRequired=($native.ExitCode -eq 3010)
       if ($native.ExitCode -notin @(0,3010)) { throw 'MSI action failed.' }
+      if ($native.ExitCode -eq 3010) {
+        $report.status='reboot-required'
+        Write-Host 'MSI returned 3010. Record pending reboot; do not count this phase as passed.'
+        exit 3010
+      }
       $service=Get-CimInstance Win32_Service -Filter "Name='SfEndpointAIProxy'"
     }
     if ($Phase -eq 'Uninstall') {
@@ -81,8 +86,8 @@ try {
       if ($health.status -ne 'ok' -or $health.implementation -ne 'go' -or $health.clientVersion -ne '0.2.3' -or $health.installationPending -eq $true) { throw 'Candidate health mismatch.' }
       $report.evidence.serviceVersion=$health.clientVersion
       $report.evidence.operationState=$health.operationState
-      if ($Phase -eq 'Paused' -and $health.operationState -ne 'paused') { throw 'Pause has not been applied.' }
-      if ($Phase -eq 'Resumed' -and $health.operationState -ne 'enabled') { throw 'Resume has not been applied.' }
+      if ($Phase -eq 'Paused' -and $health.operationState -ne 'Disabled') { throw 'Pause has not been applied.' }
+      if ($Phase -eq 'Resumed' -and $health.operationState -ne 'Enabled') { throw 'Resume has not been applied.' }
       if ($Phase -eq 'AfterReboot') {
         if ($baseline.bootUtc -eq $boot) { throw 'No real reboot since Prepare.' }
         $report.evidence.realRebootObserved=$true
