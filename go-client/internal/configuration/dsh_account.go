@@ -237,7 +237,7 @@ func (m *Manager) dshAccountProfile(ctx context.Context, p Profile, doc *dshDocu
 		return m.detachAccount(ctx, p, doc, current, record, journalPath, result)
 	}
 	profileRelative, profileErr := filepath.Rel(filepath.Join(p.Home, ".dsh", "profiles", "desktop"), filepath.Dir(doc.path))
-	if !p.DSHDesktopAccountVerified || p.DSHVersion != DSHDesktopSupportedVersion || profileErr != nil || profileRelative != "." {
+	if !p.DSHDesktopAccountVerified && record != nil || p.DSHVersion != DSHDesktopSupportedVersion || profileErr != nil || profileRelative != "." {
 		return fail("DSH_DESKTOP_ACCOUNT_UNVERIFIED")
 	}
 	if doc.referencesUnknown {
@@ -251,6 +251,10 @@ func (m *Manager) dshAccountProfile(ctx context.Context, p Profile, doc *dshDocu
 	var baseTree yaml.Node
 	if err != nil || !dshSafePath(p.Home, basePath) || dshParse(base, &baseTree) != nil || len(baseTree.Content[0].Content) != 0 {
 		return fail("DSH_DESKTOP_BASE_CONFIG_UNVERIFIED")
+	}
+	if !p.DSHDesktopAccountVerified {
+		result.Status, result.ErrorCode = 5, "DSH_DESKTOP_ACCOUNT_UNVERIFIED"
+		return []Result{result}, nil
 	}
 	originalRows := current
 	if record != nil {

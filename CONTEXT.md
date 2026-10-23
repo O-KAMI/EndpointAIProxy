@@ -10,6 +10,7 @@
 Codex 排除、生产网关构建参数、Desktop rc.2 账户 origin 与验收状态见
 [Windows 0.2.3 记录](docs/WINDOWS-023-ACCEPTANCE.md)。原生验收尚未完成，不是推广通过结论。
 原生 r9 卸载失败后的 CC Switch 解除接管修复正在重新验收，详见同一记录。
+r11 的控制恢复发现 Desktop 关闭时未接管账户 profile 被误记为硬失败；修复及新候选验收见同一记录。
 
 | 组件 | 当前定位 | 事实来源 |
 |---|---|---|

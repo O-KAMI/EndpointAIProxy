@@ -95,17 +95,55 @@ func TestDesktopAccountRefusesUserChangedManagedRows(t *testing.T) {
 	}
 }
 
+func TestUnverifiedUnmanagedDesktopDoesNotBlockClaudeEnable(t *testing.T) {
+	m, p, path, _ := desktopAccountFixture(t)
+	m.ExcludeCodex = true
+	p.DSHDesktopAccountVerified = false
+	writeFixture(t, configPath(p, "claude"), `{"env":{"ANTHROPIC_BASE_URL":"https://claude.example"}}`)
+	before, _ := os.ReadFile(path)
+	results, err := m.Reconcile(context.Background(), []Profile{p})
+	items := dshOnly(results)
+	if err != nil || len(items) != 1 || items[0].Status != 5 || items[0].ErrorCode != "DSH_DESKTOP_ACCOUNT_UNVERIFIED" {
+		t.Fatal("unmanaged unverified Desktop should remain unsupported", items, err)
+	}
+	after, _ := os.ReadFile(path)
+	routes, _ := m.Store.ListRoutes(context.Background())
+	if string(after) != string(before) || len(routes) != 1 || routes[0].AgentType != 0 {
+		t.Fatal("unverified Desktop was attached or Claude was not enabled", routes)
+	}
+	p.DSHDesktopAccountVerified = true
+	if _, err := m.Reconcile(context.Background(), []Profile{p}); err != nil {
+		t.Fatal(err)
+	}
+	managed, _ := os.ReadFile(path)
+	p.DSHDesktopAccountVerified = false
+	if _, err := m.Reconcile(context.Background(), []Profile{p}); err == nil {
+		t.Fatal("owned Desktop lost verification without blocking")
+	}
+	after, _ = os.ReadFile(path)
+	if string(after) != string(managed) {
+		t.Fatal("unverified owned Desktop configuration changed")
+	}
+}
+
 func TestDesktopAccountRequiresVerifiedRuntimeAndCanonicalProfile(t *testing.T) {
-	for _, mode := range []string{"unverified-runtime", "base-overlay"} {
+	for _, mode := range []string{"unverified-runtime", "base-overlay", "unverified-base-overlay"} {
 		t.Run(mode, func(t *testing.T) {
 			m, p, path, _ := desktopAccountFixture(t)
-			if mode == "unverified-runtime" {
+			if mode != "base-overlay" {
 				p.DSHDesktopAccountVerified = false
-			} else {
+			}
+			if mode != "unverified-runtime" {
 				writeFixture(t, filepath.Join(filepath.Dir(path), "cordis.yml"), "- id: unknown\n  config: {}\n")
 			}
 			before, _ := os.ReadFile(path)
-			if _, err := m.Reconcile(context.Background(), []Profile{p}); err == nil {
+			results, err := m.Reconcile(context.Background(), []Profile{p})
+			if mode == "unverified-runtime" {
+				items := dshOnly(results)
+				if err != nil || len(items) != 1 || items[0].Status != 5 || items[0].ErrorCode != "DSH_DESKTOP_ACCOUNT_UNVERIFIED" {
+					t.Fatal("unverified unmanaged account should remain unsupported", items, err)
+				}
+			} else if err == nil {
 				t.Fatal("unverified account setup accepted")
 			}
 			after, _ := os.ReadFile(path)
