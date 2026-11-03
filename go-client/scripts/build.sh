@@ -3,7 +3,7 @@ set -eu
 SCRIPT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 MODULE_ROOT=$(CDPATH= cd -- "$SCRIPT_ROOT/.." && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$MODULE_ROOT/.." && pwd)
-VERSION=${VERSION:-0.2.2}
+VERSION=${VERSION:-0.2.6}
 GO=${GO:-go}
 TARGETS=${TARGETS:-"windows-amd64 darwin-amd64 darwin-arm64"}
 OUTPUT_ROOT=${OUTPUT_ROOT:-"$REPO_ROOT/artifacts/go-client/$VERSION"}

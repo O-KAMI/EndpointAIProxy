@@ -6,17 +6,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLIENT_IMPLEMENTATION="${CLIENT_IMPLEMENTATION:-dotnet}"
 case "$CLIENT_IMPLEMENTATION" in
   dotnet) VERSION="${VERSION:-0.1.22}"; [[ "$VERSION" == 0.1.22 ]] || { echo 'The .NET installer supports version 0.1.22 only.' >&2; exit 2; } ;;
-  go) VERSION="${VERSION:-0.2.2}" ;;
+  go) VERSION="${VERSION:-0.2.5}" ;;
   *) echo 'CLIENT_IMPLEMENTATION must be dotnet or go.' >&2; exit 2 ;;
 esac
 [[ "$VERSION" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || { echo 'Invalid package version.' >&2; exit 2; }
 export COPYFILE_DISABLE=1
 umask 077
-[[ -n "${CLIENT_CREDENTIALS_FILE:-}" && -f "$CLIENT_CREDENTIALS_FILE" ]] || { echo "Set CLIENT_CREDENTIALS_FILE to private client credentials." >&2; exit 2; }
-if [[ "$CLIENT_IMPLEMENTATION" == go ]]; then
-  python3 "$REPO_ROOT/go-client/scripts/validate_credentials.py" "$CLIENT_CREDENTIALS_FILE"
+EXTERNAL_CLIENT_CREDENTIALS="${EXTERNAL_CLIENT_CREDENTIALS:-false}"
+if [[ "$EXTERNAL_CLIENT_CREDENTIALS" == true ]]; then
+  [[ "$CLIENT_IMPLEMENTATION" == go && -z "${CLIENT_CREDENTIALS_FILE:-}" ]] || { echo 'External credentials require Go and no build-time credential file.' >&2; exit 2; }
 else
-  python3 "$SCRIPT_DIR/Validate-ClientCredentials.py" "$CLIENT_CREDENTIALS_FILE"
+  [[ "$EXTERNAL_CLIENT_CREDENTIALS" == false && -n "${CLIENT_CREDENTIALS_FILE:-}" && -f "$CLIENT_CREDENTIALS_FILE" ]] || { echo 'Invalid credential input mode.' >&2; exit 2; }
+  if [[ "$CLIENT_IMPLEMENTATION" == go ]]; then
+    python3 "$REPO_ROOT/go-client/scripts/validate_credentials.py" "$CLIENT_CREDENTIALS_FILE"
+  else
+    python3 "$SCRIPT_DIR/Validate-ClientCredentials.py" "$CLIENT_CREDENTIALS_FILE"
+  fi
 fi
 ARCH="${ARCH:-$(uname -m)}"
 DOTNET="${DOTNET:-dotnet}"
@@ -106,7 +111,12 @@ install -m 0755 "$SCRIPT_DIR/postinstall" "$PACKAGE_SCRIPTS/postinstall"
 install -m 0755 "$SUPPORT_FILE" "$PACKAGE_SCRIPTS/InstallerSupport.sh"
 print -r -- "$ARCH" > "$PACKAGE_SCRIPTS/package-arch"
 print -r -- "$VERSION" > "$PACKAGE_SCRIPTS/package-version"
-install -m 0600 "$CLIENT_CREDENTIALS_FILE" "$PACKAGE_SCRIPTS/client-credentials.json"
+if [[ "$EXTERNAL_CLIENT_CREDENTIALS" == true ]]; then
+  print -r -- 'v1' > "$PACKAGE_SCRIPTS/external-credentials"
+  /bin/chmod 0644 "$PACKAGE_SCRIPTS/external-credentials"
+else
+  install -m 0600 "$CLIENT_CREDENTIALS_FILE" "$PACKAGE_SCRIPTS/client-credentials.json"
+fi
 
 if [[ -n "${APP_SIGN_IDENTITY:-}" ]]; then
   while IFS= read -r -d '' FILE; do

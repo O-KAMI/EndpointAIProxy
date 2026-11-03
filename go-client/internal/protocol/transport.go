@@ -95,7 +95,19 @@ func (t *Transport) RoundTrip(r *http.Request) (response *http.Response, failure
 	if trace != nil {
 		trace.ControlRequestID = id
 	}
-	env, err := Seal(t.MasterKey, t.KeyID, id, b, "request")
+	masterKey, keyID := t.MasterKey, t.KeyID
+	if binding, ok := r.Context().Value(deviceEnvelopeKeyContext{}).(deviceEnvelopeKey); ok {
+		if _, keyErr := ValidateDeviceV2Key(binding.device, binding.keyID, binding.key[:]); keyErr != nil {
+			return nil, errors.New("invalid device transport key")
+		}
+		keyID, masterKey = binding.keyID, binding.key[:]
+	} else if device, ok := r.Context().Value(deviceIdentityKey{}).(string); ok {
+		keyID, masterKey, err = deviceTransportKey(device, inner.Token)
+		if err != nil {
+			return nil, err
+		}
+	}
+	env, err := Seal(masterKey, keyID, id, b, "request")
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +143,7 @@ func (t *Transport) RoundTrip(r *http.Request) (response *http.Response, failure
 		return nil, err
 	}
 	stage = "transport_authenticate"
-	b, err = Open(t.MasterKey, t.KeyID, id, env, "response")
+	b, err = Open(masterKey, keyID, id, env, "response")
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +161,7 @@ func (t *Transport) RoundTrip(r *http.Request) (response *http.Response, failure
 	}
 	h := make(http.Header)
 	for k, v := range decoded.Headers {
-		if strings.EqualFold(k, "Content-Type") || strings.EqualFold(k, "X-SF-Policy-Signature") || strings.EqualFold(k, "X-Request-ID") {
+		if strings.EqualFold(k, "Content-Type") || strings.EqualFold(k, "X-SF-Policy-Signature") || strings.EqualFold(k, "X-Request-ID") || strings.EqualFold(k, "Retry-After") {
 			h.Set(k, v)
 		}
 	}

@@ -8,6 +8,7 @@ main() {
   sf_step sf_open_log || return 1
   sf_step sf_preflight "$SCRIPT_DIR" "${3:-}" || return 1
   sf_step sf_acquire || return 1
+  sf_step sf_stage_credentials "$SCRIPT_DIR" || return 1
   sf_step sf_snapshot || return 1
   SF_STOP_ATTEMPTED=1
   sf_step sf_stop || return 1

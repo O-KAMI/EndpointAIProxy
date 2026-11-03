@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"endpointai/client/internal/audit"
@@ -41,34 +45,51 @@ type Options struct {
 	GatewayDeviceID           string
 }
 type App struct {
-	Options                                                   Options
-	Store                                                     *state.Store
-	Audit                                                     *audit.Store
-	Profiles                                                  func(context.Context) ([]platform.Profile, error)
-	Client                                                    *control.Client
-	accountListeners                                          *proxy.AccountListeners
-	mu                                                        sync.RWMutex
-	mutation                                                  sync.Mutex
-	command                                                   sync.Mutex
-	syncControl                                               sync.Mutex
-	policy                                                    contracts.Policy
-	allowlist                                                 map[string]struct{}
-	operation                                                 state.OperationState
-	policyState                                               contracts.PolicyClientState
-	deviceID, bootID                                          string
-	started                                                   time.Time
-	lastControl, lastReconcile                                *time.Time
-	lastControlError, lastReconcileError, lastReconcileResult *string
-	activity                                                  map[string]contracts.ProxyActivityAsset
-	events                                                    []contracts.EndpointEvent
-	reconcile                                                 chan struct{}
-	credential                                                *state.Credential
-	reenrollBlocked                                           time.Time
-	nextPolicy, nextHeartbeat, nextEvents, nextReceipts       time.Time
-	controlFailures                                           map[string]controlFailure
-	controlTrace                                              map[string]observability.Detail
-	controlDurations                                          map[string]float64
-	pendingReceipts                                           map[string]state.CommandReceipt
+	Options                                                       Options
+	Store                                                         *state.Store
+	Audit                                                         *audit.Store
+	Profiles                                                      func(context.Context) ([]platform.Profile, error)
+	Client                                                        *control.Client
+	accountListeners                                              *proxy.AccountListeners
+	proxySlots                                                    chan struct{}
+	mu                                                            sync.RWMutex
+	mutation                                                      sync.Mutex
+	eventMu                                                       sync.Mutex
+	command                                                       sync.Mutex
+	syncControl                                                   sync.Mutex
+	policy                                                        contracts.Policy
+	allowlist                                                     map[string]struct{}
+	operation                                                     state.OperationState
+	policyState                                                   contracts.PolicyClientState
+	deviceID, bootID                                              string
+	started                                                       time.Time
+	lastControl, lastReconcile                                    *time.Time
+	lastControlError, lastReconcileError, lastReconcileResult     *string
+	activity                                                      map[string]contracts.ProxyActivityAsset
+	events                                                        []contracts.EndpointEvent
+	eventsLoaded                                                  bool
+	reconcile                                                     chan struct{}
+	credential                                                    *state.Credential
+	reenrollBlocked                                               time.Time
+	rotationPending                                               bool
+	nextCredentialRotation                                        time.Time
+	credentialRotationRetries                                     int
+	statelessPolicyVersions                                       bool
+	lightweightInventory                                          bool
+	compactInventory                                              bool
+	lastFullInventory                                             *contracts.HeartbeatV2Request
+	nextFullInventory                                             time.Time
+	nextInventoryScan                                             time.Time
+	lastInventoryDigest                                           [32]byte
+	inventoryGeneration                                           atomic.Uint64
+	lastInventoryGeneration                                       uint64
+	policyReceiptPending, policyReceiptWake                       atomic.Bool
+	nextPolicy, nextHeartbeat, nextEvents, nextReceipts           time.Time
+	heartbeatRetries, policyRetries, eventRetries, receiptRetries int
+	controlFailures                                               map[string]controlFailure
+	controlTrace                                                  map[string]observability.Detail
+	controlDurations                                              map[string]float64
+	pendingReceipts                                               map[string]state.CommandReceipt
 }
 
 type controlFailure struct {
@@ -77,10 +98,40 @@ type controlFailure struct {
 	Detail              observability.Detail
 }
 
+func controlRetryDelay(failures int) time.Duration {
+	if failures < 1 {
+		failures = 1
+	}
+	if failures > 6 {
+		failures = 6
+	}
+	limit := 15 * time.Second * time.Duration(1<<(failures-1))
+	if limit > 5*time.Minute {
+		limit = 5 * time.Minute
+	}
+	return limit/2 + time.Duration(rand.Int64N(int64(limit/2)+1))
+}
+
+func controlRetryDelayFor(failures int, err error) time.Duration {
+	delay := controlRetryDelay(failures)
+	var response *control.HTTPError
+	if errors.As(err, &response) && (response.Status == http.StatusTooManyRequests || response.Status == http.StatusServiceUnavailable) && response.RetryAfter > delay {
+		return response.RetryAfter
+	}
+	return delay
+}
+
+func controlInterval(seconds int) time.Duration {
+	interval := time.Duration(seconds) * time.Second
+	spread := interval / 10
+	return interval - spread + time.Duration(rand.Int64N(int64(2*spread)+1))
+}
+
 func New(ctx context.Context, opts Options, store *state.Store, logs *audit.Store, profiles func(context.Context) ([]platform.Profile, error)) (*App, error) {
 	if e := protocol.ValidatePolicy(opts.Policy); e != nil {
 		return nil, e
 	}
+	opts.Policy = clonePolicyRules(opts.Policy)
 	opts.Policy.AllowlistedBaseURLs = appendNullable(opts.Policy.AllowlistedBaseURLs)
 	if opts.Policy.GatewayOrigin != nil {
 		opts.Policy.GatewayOrigin = ptr(*opts.Policy.GatewayOrigin)
@@ -94,10 +145,17 @@ func New(ctx context.Context, opts Options, store *state.Store, logs *audit.Stor
 		return nil, e
 	}
 	a := &App{Options: opts, Store: store, Audit: logs, Profiles: profiles, policy: opts.Policy, operation: op, deviceID: id, bootID: proxy.UUID(), started: time.Now().UTC(), activity: make(map[string]contracts.ProxyActivityAsset), events: []contracts.EndpointEvent{}, reconcile: make(chan struct{}, 1), controlFailures: map[string]controlFailure{}, controlTrace: map[string]observability.Detail{}, controlDurations: map[string]float64{}, pendingReceipts: map[string]state.CommandReceipt{}}
+	if err := a.restorePendingEvents(ctx); err != nil {
+		logs.Log("EVENT_QUEUE_READ_FAILED", map[string]any{"errorCode": "EVENT_QUEUE_UNAVAILABLE"})
+	}
+	a.proxySlots = make(chan struct{}, 64)
 	if opts.Control != nil {
 		a.Client, e = control.New(*opts.Control)
 		if e != nil {
 			return nil, e
+		}
+		if e = a.Client.AttachDeviceTransportStore(ctx, store); e != nil {
+			logs.Log("CONTROL_DEVICE_STORE_UNAVAILABLE", map[string]any{"errorCode": "CONTROL_DEVICE_STORE_UNAVAILABLE"})
 		}
 		a.Client.Observe = func(stage string, d observability.Detail, elapsed time.Duration) {
 			a.mu.Lock()
@@ -110,7 +168,15 @@ func New(ctx context.Context, opts Options, store *state.Store, logs *audit.Stor
 			return nil, e
 		}
 		if cached != nil {
-			if e = protocol.ValidatePolicy(cached.Policy); e == nil {
+			if len(a.Client.Options.PolicyPublicKey) > 0 && strings.HasPrefix(cached.Signature, "ed25519-v1:") {
+				e = protocol.VerifyEd25519(cached.RawPolicy, cached.Signature, a.Client.Options.PolicyPublicKey, "policy")
+			} else if len(a.Client.Options.PolicyPublicKey) > 0 && !strings.HasPrefix(cached.Signature, "v1:") {
+				e = errors.New("POLICY_CACHE_SIGNATURE_INVALID")
+			}
+			if e == nil {
+				e = protocol.ValidatePolicy(cached.Policy)
+			}
+			if e == nil {
 				a.policy = cached.Policy
 				version := cached.Policy.PolicyVersion
 				a.policyState = contracts.PolicyClientState{LastReceivedVersion: &version, AppliedVersion: &version, ApplyStatus: contracts.PolicyApplyStatusApplied}
@@ -129,6 +195,7 @@ func (a *App) Policy() contracts.Policy {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	p := a.policy
+	p = clonePolicyRules(p)
 	p.AllowlistedBaseURLs = appendNullable(p.AllowlistedBaseURLs)
 	if p.GatewayOrigin != nil {
 		p.GatewayOrigin = ptr(*p.GatewayOrigin)
@@ -141,6 +208,19 @@ func appendNullable(v []string) []string {
 	}
 	return append([]string{}, v...)
 }
+
+func clonePolicyRules(p contracts.Policy) contracts.Policy {
+	p.AllowlistedDomains = appendNullable(p.AllowlistedDomains)
+	if p.RoutingRules != nil {
+		p.RoutingRules = append([]contracts.RoutingRule{}, p.RoutingRules...)
+		for i := range p.RoutingRules {
+			if p.RoutingRules[i].GatewayOrigin != nil {
+				p.RoutingRules[i].GatewayOrigin = ptr(*p.RoutingRules[i].GatewayOrigin)
+			}
+		}
+	}
+	return p
+}
 func (a *App) Enabled() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -148,6 +228,15 @@ func (a *App) Enabled() bool {
 }
 func (a *App) DeviceID() string { return a.deviceID }
 func compileAllowlist(p contracts.Policy) map[string]struct{} {
+	if p.SchemaVersion == 2 {
+		out := make(map[string]struct{}, len(p.AllowlistedDomains))
+		for _, domain := range p.AllowlistedDomains {
+			if normalized, err := protocol.NormalizeDomain(domain); err == nil {
+				out[normalized] = struct{}{}
+			}
+		}
+		return out
+	}
 	values := p.AllowlistedBaseURLs
 	if values == nil {
 		values = []string{"https://internal.example.invalid/ccr"}
@@ -165,36 +254,57 @@ func (a *App) proxyPolicy() (contracts.Policy, map[string]struct{}) {
 	return a.policy, a.allowlist
 }
 func (a *App) Bypass(value string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.policy.SchemaVersion == 2 {
+		return protocol.DomainAllowed(value, a.allowlist)
+	}
 	target, e := protocol.NormalizeBaseURL(value)
 	if e != nil {
 		return false
 	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
 	_, ok := a.allowlist[target]
 	return ok
 }
 func (a *App) RequestReconcile() {
+	a.inventoryGeneration.Add(1)
 	select {
 	case a.reconcile <- struct{}{}:
 	default:
 	}
 }
 
-func (a *App) ApplyPolicy(ctx context.Context, p contracts.Policy, sig string) error {
+func (a *App) ApplyPolicy(ctx context.Context, p contracts.Policy, sig string, authenticatedRaw ...[]byte) error {
 	if e := protocol.ValidatePolicy(p); e != nil {
 		return e
 	}
 	a.mutation.Lock()
 	defer a.mutation.Unlock()
 	current := a.Policy()
-	if p.PolicyVersion < current.PolicyVersion || (p.PolicyVersion == current.PolicyVersion && p.ServerInstanceID == current.ServerInstanceID) {
+	if p.PolicyVersion < current.PolicyVersion || (p.PolicyVersion == current.PolicyVersion && p.ServerInstanceID == current.ServerInstanceID && p.SchemaVersion <= current.SchemaVersion) {
+		// A signed response for an unchanged policy can upgrade the offline cache
+		// without changing the effective policy or its version.
+		if p.PolicyVersion == current.PolicyVersion && p.ServerInstanceID == current.ServerInstanceID && p.SchemaVersion == current.SchemaVersion && len(authenticatedRaw) > 0 && len(authenticatedRaw[0]) > 0 {
+			oldBody, oldErr := json.Marshal(current)
+			newBody, newErr := json.Marshal(p)
+			if oldErr == nil && newErr == nil && string(oldBody) == string(newBody) {
+				cached, err := a.Store.LoadPolicy(ctx)
+				if err != nil {
+					return err
+				}
+				if cached != nil && cached.Signature == sig && string(cached.RawPolicy) == string(authenticatedRaw[0]) {
+					return nil
+				}
+				return a.Store.SavePolicy(ctx, p, sig, time.Now().UTC(), authenticatedRaw[0])
+			}
+		}
 		return nil
 	}
-	if e := a.Store.SavePolicy(ctx, p, sig, time.Now().UTC()); e != nil {
+	if e := a.Store.SavePolicy(ctx, p, sig, time.Now().UTC(), authenticatedRaw...); e != nil {
 		return e
 	}
 	a.mu.Lock()
+	p = clonePolicyRules(p)
 	p.AllowlistedBaseURLs = appendNullable(p.AllowlistedBaseURLs)
 	if p.GatewayOrigin != nil {
 		p.GatewayOrigin = ptr(*p.GatewayOrigin)
@@ -202,9 +312,12 @@ func (a *App) ApplyPolicy(ctx context.Context, p contracts.Policy, sig string) e
 	a.policy = p
 	a.allowlist = compileAllowlist(p)
 	version := p.PolicyVersion
-	a.policyState = contracts.PolicyClientState{LastReceivedVersion: &version, AppliedVersion: &version, ApplyStatus: contracts.PolicyApplyStatusApplied}
+	a.policyState = contracts.PolicyClientState{AppliedSchemaVersion: p.SchemaVersion, LastReceivedVersion: &version, AppliedVersion: &version, ApplyStatus: contracts.PolicyApplyStatusApplied}
+	// A successful reconciliation for the previous policy is not evidence for this version.
+	a.lastReconcile, a.lastReconcileResult, a.lastReconcileError = nil, nil, nil
 	a.mu.Unlock()
 	a.Audit.Log("POLICY_APPLIED", map[string]any{"policyVersion": p.PolicyVersion, "operation": "policy"})
+	a.policyReceiptPending.Store(true)
 	a.RequestReconcile()
 	return nil
 }
@@ -296,12 +409,27 @@ func (a *App) Reconcile(ctx context.Context) error {
 	}
 	a.mutation.Lock()
 	defer a.mutation.Unlock()
+	defer func() {
+		if a.policyReceiptPending.Swap(false) {
+			a.policyReceiptWake.Store(true)
+		}
+	}()
 	if !a.Options.AutoAttach || !a.Policy().Enabled || !a.Enabled() {
 		return nil
 	}
 	profiles, e := a.Profiles(ctx)
 	if e != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		now := time.Now().UTC()
+		a.mu.Lock()
+		a.lastReconcile = &now
+		a.lastReconcileResult = ptr("failed")
+		a.lastReconcileError = ptr("PROFILE_DISCOVERY_FAILED")
+		a.mu.Unlock()
 		a.logConfigFailure("profile_discovery", e)
+		a.AddEvent("RECONCILE_FAILED", "User profiles could not be discovered for reconciliation.")
 		return e
 	}
 	var results []configuration.Result
@@ -354,7 +482,7 @@ func (a *App) Reconcile(ctx context.Context) error {
 
 func (a *App) RunReconcile(ctx context.Context) {
 	a.RequestReconcile()
-	tick := time.NewTicker(500 * time.Millisecond)
+	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	lastPeriodic := time.Time{}
 	lastFingerprint := ""
@@ -383,6 +511,9 @@ func (a *App) RunReconcile(ctx context.Context) {
 				}
 			}
 			fingerprint := b.String()
+			if fingerprint != lastFingerprint {
+				a.inventoryGeneration.Add(1)
+			}
 			if fingerprint != lastFingerprint || now.Sub(lastPeriodic) >= time.Minute {
 				lastFingerprint = fingerprint
 				lastPeriodic = now
@@ -398,6 +529,7 @@ func (a *App) operationOnce(ctx context.Context, kind contracts.RemoteCommandTyp
 	}
 	a.mutation.Lock()
 	defer a.mutation.Unlock()
+	defer a.inventoryGeneration.Add(1)
 	if kind == contracts.RemoteCommandTypeDisableProxy {
 		blocked := state.OperationState{State: contracts.ClientOperationStateDisabled, UpdatedAtUTC: time.Now().UTC()}
 		if e := a.Store.SaveOperationState(ctx, blocked); e != nil {
@@ -461,7 +593,7 @@ func (a *App) ApplyCommand(ctx context.Context, cmd contracts.SignedRemoteComman
 	if a.Client == nil {
 		return errors.New("CONTROL_DISABLED")
 	}
-	if e := protocol.VerifyCommand(cmd, a.Client.Options.PolicyKey); e != nil {
+	if e := a.Client.VerifyCommand(cmd); e != nil {
 		return e
 	}
 	p := cmd.Payload
@@ -477,6 +609,11 @@ func (a *App) ApplyCommand(ctx context.Context, cmd contracts.SignedRemoteComman
 	}
 	if receipt != nil && (receipt.Status == contracts.RemoteCommandStatusSucceeded || receipt.Status == contracts.RemoteCommandStatusFailed) {
 		_ = a.reportCommand(ctx, *receipt, token)
+		return nil
+	}
+	if receipt != nil && (receipt.ExpiresAtUTC == nil || !receipt.ExpiresAtUTC.After(time.Now().UTC())) {
+		// The interrupted operation may already have taken effect. Do not rerun it
+		// after expiry; the server's result-unknown workflow requires human review.
 		return nil
 	}
 	if receipt == nil {
@@ -501,6 +638,9 @@ func (a *App) ApplyCommand(ctx context.Context, cmd contracts.SignedRemoteComman
 }
 
 func (a *App) finishCommand(ctx context.Context, receipt state.CommandReceipt, token string) error {
+	if receipt.ExpiresAtUTC == nil || !receipt.ExpiresAtUTC.After(time.Now().UTC()) {
+		return nil
+	}
 	_, code, e := a.operationOnce(ctx, receipt.Type)
 	receipt.Status = contracts.RemoteCommandStatusSucceeded
 	if e != nil {
@@ -545,12 +685,49 @@ func (a *App) reportCommand(ctx context.Context, r state.CommandReceipt, token s
 
 func (a *App) enroll(ctx context.Context) (*state.Credential, error) {
 	hostname, _ := os.Hostname()
-	out, e := a.Client.Enroll(ctx, contracts.DeviceEnrollmentRequest{SchemaVersion: 2, DeviceID: a.deviceID, Hostname: hostname, ServiceVersion: a.Options.Version})
+	request := contracts.DeviceEnrollmentRequest{SchemaVersion: 2, DeviceID: a.deviceID, Hostname: hostname, ServiceVersion: a.Options.Version}
+	if a.credential != nil {
+		request.PreviousDeviceToken = a.credential.Token
+	} else {
+		// Bind pending state to the control identity; never send it to a new origin.
+		type pendingEnrollment struct{ Device, Origin, Pin, Token string }
+		value, err := a.Store.LoadPendingEnrollment(ctx)
+		if err != nil {
+			return nil, errors.New("CONTROL_PENDING_ENROLLMENT_READ_FAILED")
+		}
+		var pending pendingEnrollment
+		if value == "" {
+			var random [32]byte
+			if _, err = cryptorand.Read(random[:]); err != nil {
+				return nil, errors.New("CONTROL_PENDING_ENROLLMENT_RANDOM_FAILED")
+			}
+			pending = pendingEnrollment{Device: a.deviceID, Origin: a.Client.Options.Origin, Pin: a.Client.Options.CertificatePin, Token: base64.StdEncoding.EncodeToString(random[:])}
+			clear(random[:])
+			data, err := json.Marshal(pending)
+			if err != nil {
+				return nil, errors.New("CONTROL_PENDING_ENROLLMENT_INVALID")
+			}
+			err = a.Store.SavePendingEnrollment(ctx, string(data))
+			clear(data)
+			if err != nil {
+				return nil, errors.New("CONTROL_PENDING_ENROLLMENT_WRITE_FAILED")
+			}
+		} else if json.Unmarshal([]byte(value), &pending) != nil || pending.Device != a.deviceID || pending.Origin != a.Client.Options.Origin || pending.Pin != a.Client.Options.CertificatePin {
+			return nil, errors.New("CONTROL_PENDING_ENROLLMENT_INVALID")
+		}
+		decoded, err := base64.StdEncoding.Strict().DecodeString(pending.Token)
+		if err != nil || len(decoded) != 32 || base64.StdEncoding.EncodeToString(decoded) != pending.Token {
+			return nil, errors.New("CONTROL_PENDING_ENROLLMENT_INVALID")
+		}
+		clear(decoded)
+		request.InitialDeviceToken = pending.Token
+	}
+	out, e := a.Client.Enroll(ctx, request)
 	if e != nil {
 		return nil, e
 	}
 	c := state.Credential{Token: out.DeviceToken, EnrolledAtUTC: out.EnrolledAtUTC, ServerOrigin: ptr(a.Client.Options.Origin), ServerCertificateSPKISHA256: ptr(a.Client.Options.CertificatePin)}
-	if e = a.Store.SaveCredential(ctx, c); e != nil {
+	if e = a.Store.CommitEnrollment(ctx, c); e != nil {
 		return nil, e
 	}
 	return &c, nil
@@ -566,6 +743,12 @@ func (a *App) Sync(ctx context.Context) error {
 		return nil
 	}
 	now := time.Now().UTC()
+	if a.policyReceiptWake.Swap(false) && a.heartbeatRetries == 0 {
+		due := now.Add(time.Duration(rand.Int64N(int64(5*time.Second) + 1)))
+		if a.nextHeartbeat.After(due) {
+			a.nextHeartbeat = due
+		}
+	}
 	if a.credential == nil {
 		cached, e := a.Store.LoadCredential(ctx)
 		if e != nil {
@@ -584,12 +767,17 @@ func (a *App) Sync(ctx context.Context) error {
 		}
 	}
 	// Each stage owns its deadline and backoff. Failure never suppresses a different due stage.
-	var first error
+	first := a.rotateCredential(ctx, nil)
+	if a.credential == nil {
+		return first
+	}
 	synchronized := false
 	record := func(stage string, e error) {
 		a.controlResult(stage, e)
 		if e != nil {
-			e = a.rejected(ctx, e)
+			if !a.rotationPending {
+				e = a.rejected(ctx, e)
+			}
 			if first == nil {
 				first = e
 			}
@@ -597,17 +785,99 @@ func (a *App) Sync(ctx context.Context) error {
 	}
 	if !now.Before(a.nextHeartbeat) {
 		a.nextHeartbeat = now.Add(15 * time.Second)
-		heartbeat, e := a.Heartbeat(ctx)
+		var heartbeat contracts.HeartbeatV2Request
+		var e error
+		generation := a.inventoryGeneration.Load()
+		scanned := false
+		var scannedInventory contracts.HeartbeatV2Request
+		var digest [32]byte
+		if a.lightweightInventory && a.lastFullInventory != nil && now.Before(a.nextInventoryScan) && now.Before(a.nextFullInventory) && generation == a.lastInventoryGeneration {
+			heartbeat, e = a.lightHeartbeat(ctx, *a.lastFullInventory)
+		} else {
+			heartbeat, e = a.Heartbeat(ctx)
+			if e != nil && a.lightweightInventory && a.lastFullInventory != nil && ctx.Err() == nil {
+				record("inventory", e)
+				heartbeat, e = a.lightHeartbeat(ctx, *a.lastFullInventory)
+			} else if e == nil {
+				record("inventory", nil)
+				scanned = true
+				scannedInventory = heartbeat
+				digest, e = inventoryDigest(heartbeat)
+				if e == nil && a.lightweightInventory && a.lastFullInventory != nil && now.Before(a.nextFullInventory) && digest == a.lastInventoryDigest {
+					heartbeat.InventoryUnchanged = true
+					heartbeat.Endpoints = []contracts.AgentEndpointAsset{}
+				}
+			}
+		}
 		if e == nil {
+			heartbeat.StatelessPolicyVersions = a.statelessPolicyVersions
+			if heartbeat.InventoryUnchanged && a.compactInventory {
+				heartbeat.CompactInventory = true
+				heartbeat.Users = []contracts.EndpointUser{}
+				heartbeat.Agents = []contracts.AgentInventoryItem{}
+			}
 			var response contracts.HeartbeatV2Response
 			response, e = a.Client.Heartbeat(ctx, heartbeat, a.credential.Token)
+			var status *control.HTTPError
+			detail := observability.Classify(e)
+			unavailable := errors.As(e, &status) && status.Status == http.StatusNotFound
+			// Older device-bound servers reject unknown routes at the outer
+			// envelope; retry a full heartbeat using the same transport key.
+			if heartbeat.CompactInventory && detail.Stage == "transport_http" && detail.HTTPStatus == http.StatusBadRequest {
+				unavailable = true
+			}
+			if heartbeat.InventoryUnchanged && unavailable {
+				// An older server cannot safely interpret omitted inventory. Retry
+				// the original full endpoint after an authenticated 404.
+				a.lightweightInventory = false
+				a.compactInventory = false
+				a.lastFullInventory = nil
+				heartbeat, e = a.Heartbeat(ctx)
+				if e == nil {
+					scanned = true
+					scannedInventory = heartbeat
+					digest, e = inventoryDigest(heartbeat)
+				}
+				if e == nil {
+					heartbeat.StatelessPolicyVersions = a.statelessPolicyVersions
+					response, e = a.Client.Heartbeat(ctx, heartbeat, a.credential.Token)
+				}
+			}
 			if e == nil {
+				a.statelessPolicyVersions = response.StatelessPolicyVersions
+				a.lightweightInventory = response.LightweightInventory
+				a.compactInventory = response.LightweightInventory && response.CompactInventory
+				if scanned && response.LightweightInventory {
+					cached := scannedInventory
+					a.lastFullInventory = &cached
+					a.lastInventoryGeneration = generation
+					a.lastInventoryDigest = digest
+					a.nextInventoryScan = time.Now().Add(controlInterval(300))
+					if !heartbeat.InventoryUnchanged {
+						a.nextFullInventory = time.Now().Add(controlInterval(3600))
+					}
+				}
+				if !response.LightweightInventory {
+					a.lastFullInventory = nil
+				}
 				interval := a.Policy().HeartbeatIntervalSeconds
 				if response.NextHeartbeatSeconds >= 15 && response.NextHeartbeatSeconds <= 3600 {
 					interval = response.NextHeartbeatSeconds
 				}
-				a.nextHeartbeat = now.Add(time.Duration(interval) * time.Second)
+				a.heartbeatRetries = 0
+				a.nextHeartbeat = time.Now().Add(controlInterval(interval))
+				if a.policyRetries == 0 && response.AcceptedPolicyVersion != a.Policy().PolicyVersion && a.nextPolicy.After(time.Now()) {
+					a.nextPolicy = time.Time{}
+				}
 				synchronized = true
+				if rotationErr := a.rotateCredential(ctx, &response); rotationErr != nil {
+					if a.credential == nil {
+						return rotationErr
+					}
+					if first == nil {
+						first = rotationErr
+					}
+				}
 				if response.Command != nil {
 					commandErr := a.ApplyCommand(ctx, *response.Command, a.credential.Token)
 					record("command", commandErr)
@@ -615,25 +885,32 @@ func (a *App) Sync(ctx context.Context) error {
 			}
 		}
 		if e != nil {
-			a.nextHeartbeat = time.Now().Add(15 * time.Second)
+			a.heartbeatRetries++
+			a.nextHeartbeat = time.Now().Add(controlRetryDelayFor(a.heartbeatRetries, e))
 		}
 		record("heartbeat", e)
 	}
 	if !now.Before(a.nextPolicy) {
 		a.nextPolicy = now.Add(15 * time.Second)
-		p, sig, e := a.Client.Policy(ctx, a.deviceID, a.credential.Token)
+		p, sig, raw, e := a.Client.PolicyRaw(ctx, a.deviceID, a.credential.Token, a.statelessPolicyVersions)
 		if e == nil {
-			e = a.ApplyPolicy(ctx, p, sig)
+			e = a.ApplyPolicy(ctx, p, sig, raw)
 		}
 		if e == nil {
 			a.mu.Lock()
 			a.policyState.LastReceivedVersion = ptr(p.PolicyVersion)
 			a.mu.Unlock()
-			a.nextPolicy = now.Add(time.Duration(p.PollIntervalSeconds) * time.Second)
+			a.policyRetries = 0
+			interval := p.PollIntervalSeconds
+			if interval < 600 {
+				interval = 600
+			}
+			a.nextPolicy = time.Now().Add(controlInterval(interval))
 			synchronized = true
 		}
 		if e != nil {
-			a.nextPolicy = time.Now().Add(15 * time.Second)
+			a.policyRetries++
+			a.nextPolicy = time.Now().Add(controlRetryDelayFor(a.policyRetries, e))
 		}
 		record("policy", e)
 	}
@@ -646,6 +923,9 @@ func (a *App) Sync(ctx context.Context) error {
 		}
 		if e == nil {
 			for _, r := range resume {
+				if r.ExpiresAtUTC == nil || !r.ExpiresAtUTC.After(time.Now().UTC()) {
+					continue
+				}
 				_ = a.reportCommand(ctx, r, a.credential.Token)
 				if err := a.finishCommand(ctx, r, a.credential.Token); err != nil && e == nil {
 					e = err
@@ -663,10 +943,20 @@ func (a *App) Sync(ctx context.Context) error {
 		}
 		a.command.Unlock()
 		if e != nil {
-			a.nextReceipts = time.Now().Add(15 * time.Second)
+			a.receiptRetries++
+			a.nextReceipts = time.Now().Add(controlRetryDelayFor(a.receiptRetries, e))
 			if first == nil {
 				first = a.rejected(ctx, e)
 			}
+		} else {
+			a.receiptRetries = 0
+		}
+	}
+	if !now.Before(a.nextEvents) {
+		if e := a.restorePendingEvents(ctx); e != nil {
+			a.eventRetries++
+			a.nextEvents = time.Now().Add(controlRetryDelayFor(a.eventRetries, e))
+			record("events", observability.Wrap("events_read", "EVENT_QUEUE_UNAVAILABLE", e))
 		}
 	}
 	if !now.Before(a.nextEvents) {
@@ -679,27 +969,36 @@ func (a *App) Sync(ctx context.Context) error {
 		if len(events) > 0 {
 			a.nextEvents = now.Add(15 * time.Second)
 			out, e := a.Client.Events(ctx, contracts.EventBatchRequest{SchemaVersion: 1, BatchID: proxy.UUID(), DeviceID: a.deviceID, Events: events}, a.credential.Token)
-			if e == nil && out.Rejected > 0 {
+			if e == nil && (out.Rejected > 0 || out.Accepted+out.Duplicates != len(events)) {
 				e = observability.Wrap("events_validate", "CONTROL_EVENTS_REJECTED", nil)
 			}
 			if e == nil {
-				sent := map[string]bool{}
-				for _, event := range events {
-					sent[event.EventID] = true
-				}
-				a.mu.Lock()
-				keep := a.events[:0]
-				for _, event := range a.events {
-					if !sent[event.EventID] {
-						keep = append(keep, event)
+				a.eventMu.Lock()
+				e = a.Store.DeletePendingEvents(ctx, events)
+				if e != nil {
+					a.eventMu.Unlock()
+				} else {
+					sent := map[string]bool{}
+					for _, event := range events {
+						sent[event.EventID] = true
 					}
+					a.mu.Lock()
+					keep := a.events[:0]
+					for _, event := range a.events {
+						if !sent[event.EventID] {
+							keep = append(keep, event)
+						}
+					}
+					a.events = keep
+					a.mu.Unlock()
+					a.eventMu.Unlock()
+					a.nextEvents = time.Time{}
+					a.eventRetries = 0
 				}
-				a.events = keep
-				a.mu.Unlock()
-				a.nextEvents = time.Time{}
 			}
 			if e != nil {
-				a.nextEvents = time.Now().Add(15 * time.Second)
+				a.eventRetries++
+				a.nextEvents = time.Now().Add(controlRetryDelayFor(a.eventRetries, e))
 			}
 			record("events", e)
 		}
@@ -816,7 +1115,8 @@ func (a *App) RunControl(ctx context.Context) {
 	}
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
-	next := time.Time{}
+	next := time.Now().Add(time.Duration(rand.Int64N(int64(30*time.Second) + 1)))
+	enrollRetries := 0
 	for {
 		if !time.Now().Before(next) {
 			if e := a.Sync(ctx); e != nil {
@@ -827,11 +1127,13 @@ func (a *App) RunControl(ctx context.Context) {
 				a.lastControlError = ptr("CONTROL_SYNC_FAILED")
 				a.mu.Unlock()
 				if a.credential == nil {
-					next = time.Now().Add(15 * time.Second)
+					enrollRetries++
+					next = time.Now().Add(controlRetryDelayFor(enrollRetries, e))
 				} else {
 					next = time.Now().Add(time.Second)
 				}
 			} else {
+				enrollRetries = 0
 				next = time.Now().Add(time.Second)
 			}
 		}
@@ -843,13 +1145,49 @@ func (a *App) RunControl(ctx context.Context) {
 	}
 }
 
-func (a *App) AddEvent(code, summary string) {
+func (a *App) restorePendingEvents(ctx context.Context) error {
+	a.eventMu.Lock()
+	defer a.eventMu.Unlock()
+	if a.eventsLoaded {
+		return nil
+	}
+	pending, err := a.Store.PendingEvents(ctx)
+	if err != nil {
+		return err
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if len(a.events) >= 1000 {
+	seen := make(map[string]bool, len(pending))
+	for _, event := range pending {
+		seen[event.EventID] = true
+	}
+	for _, event := range a.events {
+		if !seen[event.EventID] {
+			pending = append(pending, event)
+			seen[event.EventID] = true
+		}
+	}
+	a.events = pending
+	a.eventsLoaded = true
+	return nil
+}
+
+func (a *App) AddEvent(code, summary string) {
+	event := contracts.EndpointEvent{EventID: proxy.UUID(), OccurredAtUTC: time.Now().UTC(), Severity: contracts.EventSeverityWarning, Type: "client", Code: code, Summary: summary}
+	a.eventMu.Lock()
+	defer a.eventMu.Unlock()
+	dropped, err := a.Store.EnqueueEvent(context.Background(), event)
+	if err != nil {
+		a.Audit.Log("EVENT_QUEUE_WRITE_FAILED", map[string]any{"errorCode": "EVENT_QUEUE_UNAVAILABLE"})
+	} else if dropped > 0 {
+		a.Audit.Log("EVENT_QUEUE_OVERFLOW", map[string]any{"droppedCount": dropped})
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.events) >= state.PendingEventLimit {
 		a.events = a.events[1:]
 	}
-	a.events = append(a.events, contracts.EndpointEvent{EventID: proxy.UUID(), OccurredAtUTC: time.Now().UTC(), Severity: contracts.EventSeverityWarning, Type: "client", Code: code, Summary: summary})
+	a.events = append(a.events, event)
 }
 
 func (a *App) Handler() http.Handler {
@@ -859,7 +1197,7 @@ func (a *App) Handler() http.Handler {
 		}
 		return a.DeviceID()
 	}
-	forward := &proxy.Handler{Store: a.Store, Policy: a.Policy, Snapshot: a.proxyPolicy, Enabled: a.Enabled, Bypass: a.Bypass, DeviceID: gatewayID, UserID: platform.ResolveUserID, GatewayKey: a.Options.GatewayKey, Transport: proxy.ForwardTransport(), StartCapture: a.Audit.Start, Observe: a.Observe}
+	forward := &proxy.Handler{Store: a.Store, Policy: a.Policy, Snapshot: a.proxyPolicy, Enabled: a.Enabled, Bypass: a.Bypass, DeviceID: gatewayID, UserID: platform.ResolveUserID, GatewayKey: a.Options.GatewayKey, Transport: proxy.ForwardTransport(), StartCapture: a.Audit.Start, Observe: a.Observe, Slots: a.proxySlots}
 	mux := http.NewServeMux()
 	mux.Handle("/r/", forward)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -886,13 +1224,27 @@ func (a *App) Handler() http.Handler {
 		a.mu.RLock()
 		op := a.operation
 		health := map[string]any{"status": "ok", "clientVersion": a.Options.Version, "implementation": "go", "listenEndpoint": a.Options.Listen, "routeCount": count, "routeMode": pascal(p.RouteMode), "policyVersion": p.PolicyVersion, "auditState": "Healthy", "operationState": enumName(contracts.ClientOperationStateNames, int(op.State)), "operationStateUpdatedAtUtc": op.UpdatedAtUTC, "lastErrorCode": op.LastErrorCode, "lastErrorSummary": op.LastErrorSummary, "deviceId": a.deviceID, "lastControlSyncAtUtc": a.lastControl, "lastControlErrorCode": a.lastControlError}
+		queue := map[string]any{"memoryDepth": len(a.events), "memoryBaselineLoaded": a.eventsLoaded, "capacity": state.PendingEventLimit, "persistedDepth": nil, "persistedReadStatus": "unavailable"}
 		a.mu.RUnlock()
+		queueCtx, cancel := context.WithTimeout(r.Context(), time.Second)
+		persisted, queueErr := a.Store.PendingEventCount(queueCtx)
+		cancel()
+		if queueErr == nil {
+			queue["persistedDepth"], queue["persistedReadStatus"] = persisted, "available"
+		} else {
+			health["status"] = "degraded"
+		}
+		health["controlEventQueue"] = queue
 		health["installationPending"] = installguard.Pending(a.Options.DataRoot)
+		health["gatewayOrigin"] = p.GatewayOrigin
 		health["auditDiagnostics"] = a.Audit.Snapshot()
 		if a.Audit.Degraded() {
 			health["auditState"] = "Degraded"
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if queueErr != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
 		_ = json.NewEncoder(w).Encode(health)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1011,6 +1363,8 @@ func (a *App) Heartbeat(ctx context.Context) (contracts.HeartbeatV2Request, erro
 	lastControl, lastReconcile, lastResult, lastError := a.lastControl, a.lastReconcile, a.lastReconcileResult, a.lastReconcileError
 	a.mu.RUnlock()
 	out := contracts.HeartbeatV2Request{SchemaVersion: 2, HeartbeatID: proxy.UUID(), ObservedAtUTC: now, Device: contracts.DeviceIdentity{DeviceID: a.deviceID, Hostname: hostname, OSVersion: runtime.GOOS + "/" + runtime.GOARCH, ServiceVersion: a.Options.Version, BootID: a.bootID}, Runtime: contracts.DeviceRuntimeState{ServiceStartedAtUTC: a.started, UptimeSeconds: int64(time.Since(a.started).Seconds()), OperationState: op.State, ProxyListenerAvailable: true, LastControlSyncAtUTC: lastControl, LastReconcileAtUTC: lastReconcile, LastReconcileResult: lastResult, LastReconcileErrorCode: lastError}, Policy: ps, Proxy: contracts.ProxyClientState{State: contracts.ProxyStateListening, ListenEndpoint: a.Options.Listen, AuditState: contracts.AuditStateHealthy}, Users: []contracts.EndpointUser{}, Agents: []contracts.AgentInventoryItem{}, Endpoints: []contracts.AgentEndpointAsset{}, Activity: []contracts.ProxyActivityAsset{}}
+	out.Runtime.SupportedPolicySchemaVersion = 2
+	out.Policy.AppliedSchemaVersion = p.SchemaVersion
 	if a.Audit.Degraded() {
 		out.Proxy.AuditState = contracts.AuditStateDegraded
 	}
@@ -1134,6 +1488,71 @@ func (a *App) Heartbeat(ctx context.Context) (contracts.HeartbeatV2Request, erro
 		out.Activity = append(out.Activity, activity)
 	}
 	return out, nil
+}
+
+// lightHeartbeat retains the last acknowledged inventory while sending current
+// runtime and proxy activity. A periodic full scan repairs missed changes.
+func (a *App) lightHeartbeat(ctx context.Context, cached contracts.HeartbeatV2Request) (contracts.HeartbeatV2Request, error) {
+	routes, err := a.Store.ListRoutes(ctx)
+	if err != nil {
+		return contracts.HeartbeatV2Request{}, err
+	}
+	out := cached
+	out.HeartbeatID = proxy.UUID()
+	out.ObservedAtUTC = time.Now().UTC()
+	out.InventoryUnchanged = true
+	out.Endpoints = []contracts.AgentEndpointAsset{}
+	out.Proxy.ActiveRouteCount = 0
+	for _, route := range routes {
+		if (a.Options.EnableDSH || route.AgentType != int(contracts.AgentTypeDeepSeekHarness)) && route.Status == int(contracts.RouteStatusAttached) {
+			out.Proxy.ActiveRouteCount++
+		}
+	}
+	a.mu.RLock()
+	out.Runtime.UptimeSeconds = int64(time.Since(a.started).Seconds())
+	out.Runtime.OperationState = a.operation.State
+	out.Runtime.LastControlSyncAtUTC = a.lastControl
+	out.Runtime.LastReconcileAtUTC = a.lastReconcile
+	out.Runtime.LastReconcileResult = a.lastReconcileResult
+	out.Runtime.LastReconcileErrorCode = a.lastReconcileError
+	out.Policy = a.policyState
+	out.Policy.AppliedSchemaVersion = a.policy.SchemaVersion
+	out.Activity = append(make([]contracts.ProxyActivityAsset, 0, len(cached.Activity)), cached.Activity...)
+	for i, item := range out.Activity {
+		if activity, ok := a.activity[item.AssetID]; ok {
+			out.Activity[i] = activity
+		}
+	}
+	a.mu.RUnlock()
+	if out.Policy.AppliedVersion == nil && a.Client != nil {
+		out.Policy.AppliedVersion = ptr(a.Policy().PolicyVersion)
+	}
+	if a.Audit.Degraded() {
+		out.Proxy.AuditState = contracts.AuditStateDegraded
+	} else {
+		out.Proxy.AuditState = contracts.AuditStateHealthy
+	}
+	return out, nil
+}
+
+func inventoryDigest(h contracts.HeartbeatV2Request) ([32]byte, error) {
+	agents := append([]contracts.AgentInventoryItem(nil), h.Agents...)
+	for i := range agents {
+		agents[i].LastSeenAtUTC = time.Time{}
+	}
+	endpoints := append([]contracts.AgentEndpointAsset(nil), h.Endpoints...)
+	for i := range endpoints {
+		endpoints[i].ObservedAtUTC = time.Time{}
+	}
+	encoded, err := json.Marshal(struct {
+		Users     []contracts.EndpointUser
+		Agents    []contracts.AgentInventoryItem
+		Endpoints []contracts.AgentEndpointAsset
+	}{h.Users, agents, endpoints})
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return sha256.Sum256(encoded), nil
 }
 
 // User/account resolution is independent of model request threads and service

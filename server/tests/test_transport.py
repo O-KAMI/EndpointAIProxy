@@ -22,6 +22,21 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = json.loads((ROOT / "tests/fixtures/dotnet-v0.1.19.json").read_text())
 
 
+def test_future_timestamp_can_remain_valid_for_ten_minutes_after_acceptance(monkeypatch):
+    import controlserver.transport as transport
+    accepted_at = 1700000000
+    clock = [accepted_at + 300]
+    monkeypatch.setattr(transport.time, 'time', lambda: clock[0])
+    item = seal(KEY, KEY_ID, str(uuid4()), {'synthetic': True}, 'request')
+    clock[0] = accepted_at
+    assert open_envelope(KEY, KEY_ID, item, 'request') == {'synthetic': True}
+    clock[0] = accepted_at + 600
+    assert open_envelope(KEY, KEY_ID, item, 'request') == {'synthetic': True}
+    clock[0] += 1
+    with pytest.raises(ValueError, match='Expired envelope'):
+        open_envelope(KEY, KEY_ID, item, 'request')
+
+
 def envelope(cfg, path="/api/v1/policy", body=None, token=None, method=None):
     return seal(cfg.TRANSPORT_KEY, cfg.TRANSPORT_KEY_ID, str(uuid4()),
                 dict(method=method or ("GET" if body is None else "POST"), path=path, query="",
@@ -49,6 +64,91 @@ def test_transport_policy_token_hidden_and_raw_signature(mysql_store):
     assert json.loads(body)["policyVersion"] == 1
     assert client.get("/api/v1/policy", headers={"Authorization":"Bearer "+cfg.CLIENT_TOKEN}).status_code == 403
     assert client.get("/api/v1/policy", headers={"X-Forwarded-Proto":"https", "endpointai.transport":"true"}).status_code == 403
+
+
+def test_ed25519_and_legacy_signatures_coexist_without_downgrade(mysql_store):
+    from controlserver.models import CreateRemoteCommandRequest
+    from controlserver.security import dumps, sign_policy
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    cfg = mysql_store.cfg
+    cfg.ED25519_SEED_TEXT = base64.b64encode(bytes(range(32))).decode()
+    client = create_app(cfg, mysql_store).test_client()
+    private = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    enrolled = send(client, cfg, envelope(cfg, "/api/v2/enroll", FIXTURE["enrollment"]))
+    credential = json.loads(base64.b64decode(enrolled["body"]))
+    device, token = credential["deviceId"], credential["deviceToken"]
+    path = f"/api/v2/devices/{device}/policy"
+    def policy_query(query):
+        return send(client, cfg, seal(cfg.TRANSPORT_KEY, cfg.TRANSPORT_KEY_ID, str(uuid4()),
+            dict(method="GET", path=path, query=query, token=token, body=b64(b"")), "request"))
+    legacy = policy_query("policySchemaVersion=2")
+    legacy_body = base64.b64decode(legacy["body"])
+    assert legacy["headers"]["X-SF-Policy-Signature"] == sign_policy(legacy_body, cfg.POLICY_HMAC_KEY)
+    signed = policy_query("policySchemaVersion=2&policySignature=ed25519-v1")
+    assert signed["status"] == 200
+    signature = signed["headers"]["X-SF-Policy-Signature"]
+    assert signature.startswith("ed25519-v1:")
+    raw = base64.urlsafe_b64decode(signature.removeprefix("ed25519-v1:") + "==")
+    private.public_key().verify(raw, b"sf-endpointai-policy-ed25519-v1\n" + base64.b64decode(signed["body"]))
+    assert policy_query("policySchemaVersion=2&policySignature=unknown")["status"] == 400
+    full = copy.deepcopy(FIXTURE["heartbeat"])
+    assert send(client, cfg, envelope(cfg, "/api/v2/heartbeat", full, token))["status"] == 200
+    command = mysql_store.create_command(device, CreateRemoteCommandRequest(type="disableProxy", reason="synthetic", expiresInMinutes=10), "operator")
+    full["ed25519Signatures"] = True
+    result = send(client, cfg, envelope(cfg, "/api/v2/heartbeat", full, token))
+    signed_command = json.loads(base64.b64decode(result["body"]))["command"]
+    assert signed_command["payload"]["commandId"] == command["commandId"]
+    signature = signed_command["signature"]
+    assert signature.startswith("ed25519-v1:")
+    raw = base64.urlsafe_b64decode(signature.removeprefix("ed25519-v1:") + "==")
+    private.public_key().verify(raw, b"sf-endpointai-command-ed25519-v1\n" + dumps(signed_command["payload"]).encode())
+    cfg.ED25519_SEED_TEXT = ""
+    no_signer = create_app(cfg, mysql_store).test_client()
+    unavailable = seal(cfg.TRANSPORT_KEY, cfg.TRANSPORT_KEY_ID, str(uuid4()),
+        dict(method="GET", path=path, query="policySchemaVersion=2&policySignature=ed25519-v1", token=token, body=b64(b"")), "request")
+    assert send(no_signer, cfg, unavailable)["status"] == 503
+    assert send(no_signer, cfg, envelope(cfg, "/api/v2/heartbeat", full, token))["status"] == 503
+
+
+def test_light_heartbeat_uses_distinct_route_and_preserves_assets(mysql_store):
+    cfg = mysql_store.cfg
+    client = create_app(cfg, mysql_store).test_client()
+    enrolled = send(client, cfg, envelope(cfg, "/api/v2/enroll", FIXTURE["enrollment"]))
+    credential = json.loads(base64.b64decode(enrolled["body"]))
+    token = credential["deviceToken"]
+    full = copy.deepcopy(FIXTURE["heartbeat"])
+    result = send(client, cfg, envelope(cfg, "/api/v2/heartbeat", full, token))
+    assert result["status"] == 200
+    assert json.loads(base64.b64decode(result["body"]))["lightweightInventory"] is True
+    light = dict(full, inventoryUnchanged=True, endpoints=[])
+    assert send(client, cfg, envelope(cfg, "/api/v2/heartbeat", light, token))["status"] == 400
+    assert send(client, cfg, envelope(cfg, "/api/v2/heartbeat/light", light, token))["status"] == 200
+    assert len(mysql_store.details(credential["deviceId"])["endpoints"]) == 1
+
+
+def test_light_heartbeat_requires_current_v2_inventory_baseline(mysql_store):
+    from controlserver.models import HeartbeatRequest
+    cfg = mysql_store.cfg
+    client = create_app(cfg, mysql_store).test_client()
+    enrolled = send(client, cfg, envelope(cfg, '/api/v2/enroll', FIXTURE['enrollment']))
+    credential = json.loads(base64.b64decode(enrolled['body']))
+    token = credential['deviceToken']
+    full = copy.deepcopy(FIXTURE['heartbeat'])
+    light = dict(full, inventoryUnchanged=True, endpoints=[])
+    result = send(client, cfg, envelope(cfg, '/api/v2/heartbeat/light', light, token))
+    assert result['status'] == 404
+    assert mysql_store.details(credential['deviceId']) is None
+    assert send(client, cfg, envelope(cfg, '/api/v2/heartbeat', full, token))['status'] == 200
+    legacy = copy.deepcopy(full)
+    legacy['schemaVersion'] = 1
+    for field in ('runtime', 'endpoints', 'activity'):
+        legacy.pop(field)
+    mysql_store.heartbeat(HeartbeatRequest.model_validate(legacy), 60, '127.0.0.1')
+    assert send(client, cfg, envelope(cfg, '/api/v2/heartbeat/light', light, token))['status'] == 404
+    assert mysql_store.details(credential['deviceId'])['device']['schemaVersion'] == 1
+    assert send(client, cfg, envelope(cfg, '/api/v2/heartbeat', full, token))['status'] == 200
+    assert send(client, cfg, envelope(cfg, '/api/v2/heartbeat/light', light, token))['status'] == 200
+    assert len(mysql_store.details(credential['deviceId'])['endpoints']) == 1
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
@@ -150,7 +250,21 @@ def test_shared_database_replay_claims_and_nonce_reuse(mysql_store):
     assert not mysql_store.claim_transport(dict(wire, requestId=str(uuid4())))
     with mysql_store.transaction() as cur:
         cur.execute("UPDATE transport_replay SET expires_at_utc=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND")
+    assert not mysql_store.claim_transport(wire)
+    assert mysql_store.cleanup_transport() == 1
     assert mysql_store.claim_transport(wire)
+
+
+def test_replay_oldest_expired_age_tracks_cleanup_lag(mysql_store):
+    assert mysql_store.replay_expired_age_seconds() == 0
+    wire = envelope(mysql_store.cfg)
+    assert mysql_store.claim_transport(wire)
+    assert mysql_store.replay_expired_age_seconds() == 0
+    with mysql_store.transaction() as cur:
+        cur.execute("UPDATE transport_replay SET expires_at_utc=UTC_TIMESTAMP(6)-INTERVAL 90 SECOND")
+    assert 90 <= mysql_store.replay_expired_age_seconds() < 120
+    assert mysql_store.cleanup_transport() == 1
+    assert mysql_store.replay_expired_age_seconds() == 0
 
 
 def test_migration_preserves_business_and_is_idempotent(mysql_store):
@@ -272,3 +386,44 @@ def test_app_py_real_http_original_client_workflow_and_restart(mysql_store, tmp_
                 except subprocess.TimeoutExpired:
                     process.kill(); process.wait()
     assert "Using worker: gthread" in log.read_text()
+
+
+def test_compact_heartbeat_preserves_acknowledged_users_and_agents(mysql_store):
+    cfg = mysql_store.cfg
+    client = create_app(cfg, mysql_store).test_client()
+    enrolled = send(client, cfg, envelope(cfg, '/api/v2/enroll', FIXTURE['enrollment']))
+    credential = json.loads(base64.b64decode(enrolled['body']))
+    token, device = credential['deviceToken'], credential['deviceId']
+    full = copy.deepcopy(FIXTURE['heartbeat'])
+    compact = dict(full, inventoryUnchanged=True, compactInventory=True, users=[], agents=[], endpoints=[])
+    route = '/api/v2/heartbeat/light-compact'
+    assert send(client, cfg, envelope(cfg, route, compact, token))['status'] == 404
+    first = send(client, cfg, envelope(cfg, '/api/v2/heartbeat', full, token))
+    assert first['status'] == 200 and json.loads(base64.b64decode(first['body']))['compactInventory'] is True
+    before = mysql_store.details(device)
+    assert before['device']['employeeIds'] and before['agents'] and before['endpoints']
+    compact['runtime'] = dict(compact['runtime'], uptimeSeconds=456)
+    result = send(client, cfg, envelope(cfg, route, compact, token))
+    assert result['status'] == 200
+    after = mysql_store.details(device)
+    assert after['device']['employeeIds'] == before['device']['employeeIds']
+    assert after['agents'] == before['agents'] and after['endpoints'] == before['endpoints']
+    assert after['runtime']['uptimeSeconds'] == 456
+    # A later full inventory supersedes the original baseline; an older
+    # compact heartbeat must preserve that newer acknowledged inventory.
+    newer = copy.deepcopy(full)
+    newer['users'][0]['accountName'] = 'new-synthetic-employee'
+    newer['agents'][0]['displayName'] = 'new-synthetic-agent'
+    assert send(client, cfg, envelope(cfg, '/api/v2/heartbeat', newer, token))['status'] == 200
+    assert send(client, cfg, envelope(cfg, route, compact, token))['status'] == 200
+    latest = mysql_store.details(device)
+    assert latest['device']['employeeIds'] == ['new-synthetic-employee']
+    assert latest['agents'][0]['displayName'] == 'new-synthetic-agent'
+    for path, body in [('/api/v2/heartbeat/light',compact),
+                       (route,dict(compact,compactInventory=False)),
+                       (route,dict(compact,users=full['users'])),
+                       (route,dict(compact,agents=full['agents'])),
+                       (route,dict(compact,endpoints=full['endpoints'])),
+                       ('/api/v2/heartbeat',compact)]:
+        assert send(client, cfg, envelope(cfg,path,body,token))['status'] == 400
+    assert mysql_store.details(device)['device']['employeeIds'] == ['new-synthetic-employee']

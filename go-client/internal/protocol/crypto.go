@@ -3,6 +3,7 @@ package protocol
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -117,6 +118,25 @@ func Verify(body []byte, signature string, key []byte) error {
 	return nil
 }
 
+// VerifyEd25519 never falls back to the legacy shared-key signature mode.
+func VerifyEd25519(body []byte, signature string, publicKey []byte, purpose string) error {
+	if len(publicKey) != ed25519.PublicKeySize || (purpose != "policy" && purpose != "command") {
+		return errors.New("POLICY_PUBLIC_KEY_INVALID")
+	}
+	if !strings.HasPrefix(signature, "ed25519-v1:") {
+		return errors.New("POLICY_SIGNATURE_VERSION_UNSUPPORTED")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(signature, "ed25519-v1:"))
+	if err != nil || len(raw) != ed25519.SignatureSize {
+		return errors.New("POLICY_SIGNATURE_MALFORMED")
+	}
+	message := append([]byte("sf-endpointai-"+purpose+"-ed25519-v1\n"), body...)
+	if !ed25519.Verify(ed25519.PublicKey(publicKey), message, raw) {
+		return errors.New("POLICY_SIGNATURE_INVALID")
+	}
+	return nil
+}
+
 // DotNetTime matches System.Text.Json's DateTimeOffset representation, including UTC offset.
 func DotNetTime(t time.Time) string { return t.Format("2006-01-02T15:04:05.9999999-07:00") }
 func CommandBody(p contracts.RemoteCommandPayload) ([]byte, error) {
@@ -131,9 +151,14 @@ func CommandBody(p contracts.RemoteCommandPayload) ([]byte, error) {
 	}{p.SchemaVersion, p.CommandID, p.DeviceID, p.Type, DotNetTime(p.IssuedAtUTC), DotNetTime(p.ExpiresAtUTC)})
 }
 func VerifyCommand(c contracts.SignedRemoteCommand, key []byte) error {
-	if len(key) < 32 {
-		return errors.New("POLICY_HMAC_KEY_INVALID")
-	}
+	return verifyCommand(c, key, nil)
+}
+
+func VerifyCommandEd25519(c contracts.SignedRemoteCommand, publicKey []byte) error {
+	return verifyCommand(c, nil, publicKey)
+}
+
+func verifyCommand(c contracts.SignedRemoteCommand, key, publicKey []byte) error {
 	p := c.Payload
 	id, e := uuid.Parse(p.CommandID)
 	did, de := uuid.Parse(p.DeviceID)
@@ -143,6 +168,12 @@ func VerifyCommand(c contracts.SignedRemoteCommand, key []byte) error {
 	b, err := CommandBody(p)
 	if err != nil {
 		return err
+	}
+	if publicKey != nil {
+		return VerifyEd25519(b, c.Signature, publicKey, "command")
+	}
+	if len(key) < 32 {
+		return errors.New("POLICY_HMAC_KEY_INVALID")
 	}
 	derived := digest(key, []byte("sf-endpoint-ai-command-v1"))
 	defer clear(derived)

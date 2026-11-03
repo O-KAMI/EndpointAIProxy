@@ -1,0 +1,24 @@
+[Unit]
+Description=EndpointAIDLP client control ingress
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=appdeploy
+Group=appdeploy
+WorkingDirectory=/app/EndpointAIDLP-Server-0.1.25
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/app/EndpointAIDLP-Server-0.1.25/.venv/bin/python /app/EndpointAIDLP-Server-0.1.25/start.py --check --role client --port 18080
+ExecStart=/app/EndpointAIDLP-Server-0.1.25/.venv/bin/python /app/EndpointAIDLP-Server-0.1.25/start.py --role client --port 18080
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=75
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

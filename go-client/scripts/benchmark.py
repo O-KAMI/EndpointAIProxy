@@ -130,6 +130,19 @@ def cpu_seconds(text):
     return total + days * 86400
 
 def sample(pid):
+    if os.name == "nt":
+        pid = int(pid)
+        if pid <= 0:
+            raise ValueError("Invalid process ID.")
+        command = ("$ErrorActionPreference='Stop';$p=Get-Process -Id " + str(pid) + ";"
+                   "[Console]::Write('{0} {1}',[long][Math]::Floor($p.WorkingSet64/1024),"
+                   "$p.TotalProcessorTime.TotalSeconds.ToString('R',[Globalization.CultureInfo]::InvariantCulture))")
+        fields = subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            encoding="utf-8", timeout=15, creationflags=subprocess.CREATE_NO_WINDOW).split()
+        if len(fields) != 2:
+            raise RuntimeError("Process resource counters unavailable.")
+        return int(fields[0]), float(fields[1])
     fields = subprocess.check_output(["ps", "-p", str(pid), "-o", "rss=", "-o", "time="], text=True).split()
     if len(fields) != 2:
         raise RuntimeError("Process resource counters unavailable.")
@@ -233,7 +246,7 @@ def main():
             failure = str(error)
         result = {"kind": "isolated-local-benchmark", "measured_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                   "go_binary_sha256": hashlib.sha256(args.go.read_bytes()).hexdigest(),
-                  "limitations": ["Single host; not native installation/IOA acceptance", ".NET launched through trusted SDK host, not standalone apphost", "4-hour soak not included"], "results": results, "candidate_failure": failure}
+                  "limitations": ["Single host; not native installation/IOA acceptance", ".NET launched through trusted SDK host, not standalone apphost", "8-hour soak not included"], "results": results, "candidate_failure": failure}
         if len(results) == 2:
             old, new = results
             result["idle_rss_reduction_percent"] = (1 - new["median_idle_rss_kib"] / old["median_idle_rss_kib"]) * 100

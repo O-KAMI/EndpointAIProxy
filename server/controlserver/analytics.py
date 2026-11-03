@@ -5,7 +5,9 @@ import ipaddress
 from urllib.parse import urlsplit
 from .security import timestamp
 from .validation import normalize_base_url
+from .validation import matching_domain
 
+MAX_SUMMARY_PARTITIONS = 4096
 FAILED = {"connectionFailed", "routeFailed", "gatewayReachedWithError"}
 DOMAINS = (("api.openai.com", "OpenAI"), ("api.anthropic.com", "Anthropic"),
     ("generativelanguage.googleapis.com", "Google Gemini"), ("aiplatform.googleapis.com", "Google Vertex AI"),
@@ -80,6 +82,7 @@ def unique(values, key):
 
 
 def project(detail, now, policy):
+    policy = detail.get("effectivePolicy") or policy
     device = detail["device"]
     agents = detail.get("agents") or []
     endpoints = unique(detail.get("endpoints") or [], "assetId")
@@ -90,6 +93,11 @@ def project(detail, now, policy):
         if old is None or (a.get("lastRequestAtUtc") or "") > (old.get("lastRequestAtUtc") or ""):
             activity[a.get("assetId")] = a
     allowlisted = {allowlist_key(value) for value in policy.get("allowlistedBaseUrls") or []}
+    def rule_key(target):
+        if device.get("appliedPolicySchemaVersion", 1) >= 2:
+            return matching_domain(target, policy.get("allowlistedDomains") or [])
+        key = allowlist_key(target) if target else None
+        return key if key in allowlisted else None
     requests = []
     for e in endpoints:
         a = activity.get(e.get("assetId"), {})
@@ -101,7 +109,8 @@ def project(detail, now, policy):
             and result_scope == "currentRun" and a.get("state") in FAILED)
         target = e.get("originalTargetBaseUrl")
         requests.append(dict(assetId=e.get("assetId"), agentFamily=family_name(e.get("agentFamily")),
-            provider=provider(target, allowlist_key(target) in allowlisted if target else False), targetBaseUrl=target,
+            provider=provider(target, bool(rule_key(target))), targetBaseUrl=target,
+            allowlistKey=rule_key(target) or (allowlist_key(target) if is_bypassed else None),
             state=a.get("state", "neverObserved"), lastHttpStatusCode=a.get("lastHttpStatusCode"),
             lastErrorCode=a.get("lastErrorCode"), lastOutcome=a.get("lastOutcome"),
             lastFailureAtUtc=a.get("lastFailureAtUtc"), lastRequestAtUtc=a.get("lastRequestAtUtc"),
@@ -110,14 +119,13 @@ def project(detail, now, policy):
             routeStatus=e.get("routeStatus"), allowlistBypassed=is_bypassed, currentAnomaly=current_anomaly))
     running = sorted({agent_family(a.get("agentType")) for a in agents if a.get("running")}
                      - {None, "CC Switch"})
-    providers = sorted({provider(e.get("originalTargetBaseUrl"),
-        allowlist_key(e.get("originalTargetBaseUrl")) in allowlisted if e.get("originalTargetBaseUrl") else False)
+    providers = sorted({provider(e.get("originalTargetBaseUrl"), bool(rule_key(e.get("originalTargetBaseUrl"))))
         for e in current})
     discovered = ({agent_family(a.get("agentType")) for a in agents if not a.get("running") and a.get("installed")}
                   | {family_name(e.get("agentFamily")) for e in current}) - set(running) - {None, ""}
     return dict(device=device, onlineState=online_state(device, now), runningAgents=running,
         discoveredAgents=sorted(discovered), providers=providers,
-        allowlist=sorted({allowlist_key(e["originalTargetBaseUrl"]) for e in current if bypassed(e)}),
+        allowlist=sorted({r["allowlistKey"] for r in requests if r["isCurrent"] and r["allowlistBypassed"]}),
         hasAnomaly=any(r["currentAnomaly"] for r in requests),
         everAnomaly=any(r["everFailed"] for r in requests),
         otherUnproxied=device.get("operationState") in {"disabled", "disableFailed", "enableFailed"}
@@ -139,8 +147,8 @@ def select(details, policy, now, scope="online", os=None):
     return rows
 
 
-def build(details, policy, now, scope="online", os=None):
-    rows = select(details, policy, now, scope, os)
+def build(details, policy, now, scope="online", os=None, _selected=None):
+    rows = select(details, policy, now, scope, os) if _selected is None else _selected
     total = len(rows)
     def percent(n, denominator=total):
         return round(100 * n / denominator, 1) if denominator else 0
@@ -161,12 +169,17 @@ def build(details, policy, now, scope="online", os=None):
             b["instanceCount"] = sum(f == b["key"] for _, f in selected)
             b["instancePercentage"] = percent(b["instanceCount"], len(selected))
         return result
-    allowlist = buckets((v["device"]["deviceId"], allowlist_key(e["originalTargetBaseUrl"]), family_name(e.get("agentFamily")))
-        for d, v in rows for e in unique(d.get("endpoints") or [], "assetId") if e.get("isCurrent") and bypassed(e))
-    for url in policy.get("allowlistedBaseUrls") or []:
+    allowlist = buckets((v["device"]["deviceId"], r["allowlistKey"], r["agentFamily"])
+        for d, v in rows for r in v["requests"] if r["isCurrent"] and r["allowlistBypassed"])
+    for url in policy.get("allowlistedDomains", policy.get("allowlistedBaseUrls")) or []:
         if not any(b["key"] == url for b in allowlist):
             allowlist.append(dict(key=url, label=url, deviceCount=0, instanceCount=0, percentage=0, instancePercentage=0, agentFamilies=[]))
-    applied = sum(v["device"].get("appliedPolicyVersion") == policy["policyVersion"] for _, v in rows)
+    required_schema = 2 if "allowlistedDomains" in policy or "routingRules" in policy else 1
+    applied = sum(((d.get("runtime") or {}).get("lastReconcileResult") or "").lower() in {"success", "completed"}
+                  and not (d.get("runtime") or {}).get("lastReconcileErrorCode")
+                  and v["device"].get("appliedPolicySchemaVersion", 1) >= required_schema
+                  and v["device"].get("appliedPolicyVersion") == v["device"].get("expectedPolicyVersion", policy["policyVersion"])
+                  and v["device"].get("appliedPolicyVersion") is not None for d, v in rows)
     return dict(updatedAtUtc=timestamp(now), dataObservedAtUtc=max((v["device"]["lastSeenAtUtc"] for _, v in rows), default=None),
         scope=scope, totalDevices=total,
         onlineDevices=sum(v["onlineState"] == "online" for _, v in rows),
@@ -180,11 +193,99 @@ def build(details, policy, now, scope="online", os=None):
             for _, v in rows for r in v["requests"] if r["currentAnomaly"]),
         allowlist=sorted(allowlist, key=lambda b: (-b["deviceCount"], b["key"])),
         operatingSystems=sorted({d["device"].get("osVersion") or "" for d in details}),
-        policy=dict(version=policy["policyVersion"], appliedDevices=applied, pendingDevices=total-applied))
+        policy=dict(version=policy["policyVersion"], appliedDevices=applied, pendingDevices=total-applied,
+            unsupportedDevices=sum(v["device"].get("supportedPolicySchemaVersion", 1) < required_schema for _, v in rows)))
+
+
+
+class SummaryAccumulator:
+    """Merge summaries for disjoint device sets without retaining the devices."""
+    counters = ("totalDevices", "onlineDevices", "runningAgentDevices", "anomalyDevices",
+                "everAnomalyDevices", "allowlistDevices", "otherUnproxiedDevices", "unknownDevices", "legacyDevices")
+
+    def __init__(self, policy, now, scope="online"):
+        self.result = build([], policy, now, scope)
+        self.groups = {name: {} for name in ("agents", "tools", "providers", "errors", "allowlist")}
+        self.operating_systems = set()
+
+    def add(self, part):
+        result = self.result
+        for key in self.counters:
+            result[key] += part[key]
+        for key in ("appliedDevices", "pendingDevices", "unsupportedDevices"):
+            result["policy"][key] += part["policy"][key]
+        if part["dataObservedAtUtc"] and (not result["dataObservedAtUtc"] or part["dataObservedAtUtc"] > result["dataObservedAtUtc"]):
+            result["dataObservedAtUtc"] = part["dataObservedAtUtc"]
+        self.operating_systems.update(part["operatingSystems"])
+        for name, merged in self.groups.items():
+            for bucket in part[name]:
+                current = merged.setdefault(bucket["key"], dict(key=bucket["key"], label=bucket["label"],
+                    deviceCount=0, instanceCount=0, agentFamilies=set()))
+                current["deviceCount"] += bucket["deviceCount"]
+                current["instanceCount"] += bucket["instanceCount"]
+                current["agentFamilies"].update(bucket["agentFamilies"])
+
+    def finish(self):
+        result = self.result
+        total = result["totalDevices"]
+        for name, merged in self.groups.items():
+            instances = sum(bucket["instanceCount"] for bucket in merged.values())
+            for bucket in merged.values():
+                bucket["percentage"] = round(100 * bucket["deviceCount"] / total, 1) if total else 0
+                bucket["instancePercentage"] = round(100 * bucket["instanceCount"] / instances, 1) if instances else 0
+                bucket["agentFamilies"] = sorted(bucket["agentFamilies"])
+            if merged:
+                result[name] = sorted(merged.values(), key=lambda bucket: (-bucket["deviceCount"], bucket["key"]))
+        result["operatingSystems"] = sorted(self.operating_systems)
+        return result
+
+
+def build_batches(batches, policy, now, scope="online", os=None):
+    """Merge unique-device batches without retaining the entire inventory in memory."""
+    accumulator = SummaryAccumulator(policy, now, scope)
+    for batch in batches:
+        accumulator.add(build(batch, policy, now, scope, os))
+    return accumulator.finish()
+
+
+def build_partitions(batches, policy, now, observer=None):
+    """Build disjoint summaries by OS, online state, and legacy status in one scan."""
+    accumulators = {}
+    for batch in batches:
+        partitions = defaultdict(list)
+        projected = [(detail, project(detail, now, policy)) for detail in batch]
+        if observer is not None:
+            observer(projected)
+        for detail, view in projected:
+            device = detail["device"]
+            key = (device.get("osVersion") or "", view["onlineState"], (device.get("schemaVersion") or 1) < 2)
+            partitions[key].append((detail, view))
+        for key, pairs in partitions.items():
+            if key not in accumulators:
+                if len(accumulators) >= MAX_SUMMARY_PARTITIONS:
+                    raise RuntimeError("Analytics cache contains too many partitions")
+                accumulators[key] = SummaryAccumulator(policy, now, "all")
+            rows = [detail for detail, _ in pairs]
+            accumulators[key].add(build(rows, policy, now, "all", _selected=pairs))
+    return [dict(os=key[0], state=key[1], legacy=key[2], summary=value.finish())
+            for key, value in accumulators.items()]
+
+
+def merge_partitions(partitions, policy, now, scope="online", os=None):
+    accumulator = SummaryAccumulator(policy, now, scope)
+    systems = set()
+    for part in partitions:
+        systems.add(part["os"])
+        if (scope == "all" or (scope == "legacyclient" and part["legacy"]) or part["state"] == scope):
+            if not os or os.lower() in part["os"].lower():
+                accumulator.add(part["summary"])
+    result = accumulator.finish()
+    result["operatingSystems"] = sorted(systems)
+    return result
 
 
 def drill_down(details, policy, now, scope="online", os=None, kind=None, key=None,
-               search=None, skip=0, take=50, agent=None, provider=None, anomaly=None, allowlist=None):
+               search=None, skip=0, take=50, agent=None, provider=None, anomaly=None, allowlist=None, employeeExact=None):
     selected = []
     for detail, v in select(details, policy, now, scope, os):
         matches = {"online": v["onlineState"] == "online", "running": bool(v["runningAgents"]),
@@ -195,7 +296,10 @@ def drill_down(details, policy, now, scope="online", os=None, kind=None, key=Non
             "otherUnproxied": v["otherUnproxied"], "unknown": v["dataInsufficient"]}
         if not matches.get(kind, True):
             continue
-        if search and not any(search.lower() in str(v["device"].get(k) or "").lower() for k in ("hostname", "deviceId")):
+        if search and not any(search.lower() in str(value or "").lower() for value in
+                              (v["device"].get("hostname"), v["device"].get("deviceId"), *(v["device"].get("employeeIds") or []))):
+            continue
+        if employeeExact and not any(employeeExact.lower() == employee.lower() for employee in v["device"].get("employeeIds") or []):
             continue
         if agent and agent not in v["runningAgents"] or provider and provider not in v["providers"]:
             continue

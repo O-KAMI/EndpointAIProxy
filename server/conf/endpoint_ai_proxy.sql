@@ -15,6 +15,14 @@ CREATE TABLE schema_migrations (
     checksum CHAR(64) NOT NULL,
     applied_at_utc DATETIME(6) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE device_policy_state (
+    device_id CHAR(36) NOT NULL PRIMARY KEY,
+    base_policy_version BIGINT NOT NULL,
+    effective_policy_version BIGINT NOT NULL,
+    overrides_json JSON NULL,
+    effective_policy_json JSON NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE control_policy (
     singleton_id TINYINT NOT NULL PRIMARY KEY,
     policy_version BIGINT NOT NULL,
@@ -101,4 +109,56 @@ CREATE TABLE admin_audit_log (
     summary TEXT NOT NULL,
     INDEX ix_audit_time (occurred_at_utc),
     INDEX ix_audit_device_time (device_id, occurred_at_utc)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE rollout_batches (
+    batch_id CHAR(36) NOT NULL PRIMARY KEY,
+    command_type VARCHAR(32) NOT NULL,
+    reason VARCHAR(256) NOT NULL,
+    created_by VARCHAR(64) NOT NULL,
+    created_at_utc DATETIME(6) NOT NULL,
+    expires_in_minutes INT NOT NULL,
+    max_per_second INT NOT NULL,
+    next_dispatch_at_utc DATETIME(6) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    total_targets INT NOT NULL,
+    INDEX ix_rollout_due (status, next_dispatch_at_utc, batch_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE rollout_targets (
+    batch_id CHAR(36) NOT NULL,
+    device_id CHAR(36) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    command_id CHAR(36) NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    error_code VARCHAR(128) NULL,
+    PRIMARY KEY (batch_id, device_id),
+    INDEX ix_rollout_pending (batch_id, status, device_id),
+    UNIQUE KEY ux_rollout_command (command_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE policy_rollout_batches (
+    batch_id CHAR(36) NOT NULL PRIMARY KEY,
+    base_version BIGINT NOT NULL,
+    candidate_json JSON NOT NULL,
+    reason VARCHAR(256) NOT NULL,
+    created_by VARCHAR(64) NOT NULL,
+    created_at_utc DATETIME(6) NOT NULL,
+    max_per_second INT NOT NULL,
+    next_dispatch_at_utc DATETIME(6) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    total_targets INT NOT NULL,
+    INDEX ix_policy_rollout_due (status, next_dispatch_at_utc, batch_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE policy_rollout_targets (
+    batch_id CHAR(36) NOT NULL,
+    device_id CHAR(36) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    assigned_version BIGINT NULL,
+    error_code VARCHAR(128) NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (batch_id, device_id),
+    INDEX ix_policy_rollout_pending (batch_id, status, device_id),
+    INDEX ix_policy_rollout_device (device_id, status, batch_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

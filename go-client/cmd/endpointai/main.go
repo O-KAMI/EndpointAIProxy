@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -36,7 +37,7 @@ import (
 	"endpointai/client/internal/state"
 )
 
-var version = "0.2.3"
+var version = "0.2.5"
 
 type options struct {
 	app                                                  app.Options
@@ -88,7 +89,7 @@ func parse(args []string) (options, error) {
 		return options{}, errors.New("DATA_ROOT_INVALID")
 	}
 	opts := options{app: app.Options{Version: version, Listen: "127.0.0.1:18080", DataRoot: abs}, maintenance: cli["maintenance"], diagnosticsOutput: cli["diagnostics-output"], diagnosticsRequestID: cli["diagnostics-request-id"], diagnosticsSince: 72 * time.Hour, profileRoot: os.Getenv("SF_PROXY_E2E_PROFILE_ROOT")}
-	if opts.maintenance != "" && opts.maintenance != "detach-all" && opts.maintenance != "collect-diagnostics" {
+	if opts.maintenance != "" && opts.maintenance != "detach-all" && opts.maintenance != "collect-diagnostics" && opts.maintenance != "recover-credential" {
 		return opts, errors.New("MAINTENANCE_MODE_UNSUPPORTED")
 	}
 	if text := cli["diagnostics-since-hours"]; text != "" {
@@ -169,7 +170,7 @@ func parse(args []string) (options, error) {
 			return opts, errors.New("GATEWAY_KEY_INVALID")
 		}
 	}
-	if opts.maintenance != "" {
+	if opts.maintenance != "" && opts.maintenance != "recover-credential" {
 		return opts, nil
 	}
 	setting := func(env, name, fallback string) (string, error) {
@@ -199,6 +200,10 @@ func parse(args []string) (options, error) {
 		if e != nil {
 			return opts, e
 		}
+		public, e := read("SF_PROXY_CONTROL_POLICY_PUBLIC_KEY", "ControlPolicyPublicKey")
+		if e != nil {
+			return opts, e
+		}
 		transport, e := read("SF_PROXY_CONTROL_TRANSPORT_KEY", "ControlTransportKey")
 		if e != nil {
 			return opts, e
@@ -215,6 +220,10 @@ func parse(args []string) (options, error) {
 		if e != nil {
 			return opts, errors.New("CONTROL_POLICY_KEY_INVALID")
 		}
+		policyPublicKey, e := base64.StdEncoding.DecodeString(public)
+		if e != nil {
+			return opts, errors.New("CONTROL_POLICY_PUBLIC_KEY_INVALID")
+		}
 		var transportKey []byte
 		if transport != "" {
 			transportKey, e = base64.StdEncoding.DecodeString(transport)
@@ -222,7 +231,7 @@ func parse(args []string) (options, error) {
 				return opts, errors.New("CONTROL_TRANSPORT_KEY_INVALID")
 			}
 		}
-		co := control.Options{Origin: origin, EnrollmentToken: token, CertificatePin: pin, PolicyKey: policyKey, TransportKey: transportKey, TransportKeyID: id}
+		co := control.Options{Origin: origin, EnrollmentToken: token, CertificatePin: pin, PolicyKey: policyKey, PolicyPublicKey: policyPublicKey, TransportKey: transportKey, TransportKeyID: id}
 		if _, e = control.New(co); e != nil {
 			return opts, e
 		}
@@ -422,6 +431,41 @@ func maintenanceFailure(stage string, err error) int {
 	return 1
 }
 
+// recoverCredential consumes a single bounded JSON object from stdin. It never
+// prints the token and verifies it against the configured control server first.
+func recoverCredential(ctx context.Context, store *state.Store, options control.Options, input io.Reader, verify func(string, string) error) error {
+	data, err := io.ReadAll(io.LimitReader(input, 4097))
+	if err != nil || len(data) > 4096 {
+		return errors.New("RECOVERY_INPUT_INVALID")
+	}
+	defer clear(data)
+	var value struct {
+		DeviceID      string    `json:"deviceId"`
+		DeviceToken   string    `json:"deviceToken"`
+		EnrolledAtUTC time.Time `json:"enrolledAtUtc"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&value); err != nil || decoder.Decode(&struct{}{}) != io.EOF || value.EnrolledAtUTC.IsZero() {
+		return errors.New("RECOVERY_INPUT_INVALID")
+	}
+	key, err := base64.StdEncoding.DecodeString(value.DeviceToken)
+	if err != nil || len(key) != 32 {
+		return errors.New("RECOVERY_INPUT_INVALID")
+	}
+	clear(key)
+	expected, err := store.ExistingDeviceID(ctx)
+	if err != nil || value.DeviceID != expected {
+		return errors.New("RECOVERY_DEVICE_MISMATCH")
+	}
+	if err = verify(expected, value.DeviceToken); err != nil {
+		return errors.New("RECOVERY_CREDENTIAL_REJECTED")
+	}
+	origin, pin := options.Origin, options.CertificatePin
+	return store.RecoverCredential(ctx, state.Credential{Token: value.DeviceToken, EnrolledAtUTC: value.EnrolledAtUTC,
+		ServerOrigin: &origin, ServerCertificateSPKISHA256: &pin})
+}
+
 func maintenance(opts options) int {
 	admin, e := platform.IsElevated()
 	if e != nil || !admin {
@@ -505,6 +549,10 @@ func maintenance(opts options) int {
 	}
 	defer l.Close()
 	if _, e = os.Stat(filepath.Join(opts.app.DataRoot, "state", "client.db")); os.IsNotExist(e) {
+		if opts.maintenance == "recover-credential" {
+			fmt.Fprintln(os.Stderr, "RECOVERY_STATE_MISSING")
+			return 1
+		}
 		return 0
 	}
 	lock, e := instance.Acquire(filepath.Join(opts.app.DataRoot, "client.lock"))
@@ -521,6 +569,23 @@ func maintenance(opts options) int {
 		return maintenanceFailure("state_open", e)
 	}
 	defer store.Close()
+	if opts.maintenance == "recover-credential" {
+		if opts.app.Control == nil {
+			return maintenanceFailure("recovery_configuration", errors.New("CONTROL_DISABLED"))
+		}
+		client, err := control.New(*opts.app.Control)
+		if err != nil {
+			return maintenanceFailure("recovery_configuration", err)
+		}
+		if err = recoverCredential(ctx, store, client.Options, os.Stdin, func(device, token string) error {
+			_, _, err := client.Policy(ctx, device, token, true)
+			return err
+		}); err != nil {
+			return maintenanceFailure("credential_recovery", err)
+		}
+		fmt.Println("Credential recovered; start the client service and verify control synchronization.")
+		return 0
+	}
 	ps, e := profiles(opts)(ctx)
 	if e != nil {
 		return maintenanceFailure("profile_discovery", e)

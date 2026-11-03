@@ -6,9 +6,16 @@ import json
 from pathlib import Path
 import re
 import zipfile
+from packaging.tags import compatible_tags, cpython_tags, parse_tag
+from packaging.utils import parse_wheel_filename
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "0.1.24"
+RELEASE_VERSION = "0.1.26"
+
+
+def require_update_validated():
+    if RELEASE_VERSION == "0.1.26":
+        raise RuntimeError("0.1.26 delivery is blocked until the schema 3/4 to 5 upgrade and rollback procedures are validated on an isolated Linux host")
 
 
 def offline_wheels():
@@ -22,6 +29,10 @@ def offline_wheels():
         required[normalize(name)] = version
     wheels = []
     for architecture in ("x86_64", "aarch64"):
+        platforms = ["manylinux_2_28_" + architecture, "manylinux_2_17_" + architecture,
+                     "manylinux2014_" + architecture]
+        supported = set(cpython_tags((3, 13), abis=["cp313"], platforms=platforms))
+        supported.update(compatible_tags((3, 13), interpreter="cp313", platforms=platforms))
         candidates = sorted((ROOT / "deployment/wheelhouse" / architecture).glob("*.whl"))
         installed = {}
         for path in candidates:
@@ -35,14 +46,25 @@ def offline_wheels():
                 metadata = BytesParser().parsebytes(archive.read(metadata_names[0]))
                 tags = BytesParser().parsebytes(archive.read(wheel_names[0])).get_all("Tag", [])
             name = normalize(metadata["Name"])
+            wheel_name, wheel_version, _, filename_tags = parse_wheel_filename(path.name)
+            wheel_tags = set().union(*(parse_tag(tag) for tag in tags)) if tags else set()
+            if normalize(str(wheel_name)) != name or str(wheel_version) != metadata["Version"] or wheel_tags != filename_tags:
+                raise RuntimeError("Offline wheel filename and metadata do not match")
             if name in installed or required.get(name) != metadata["Version"]:
                 raise RuntimeError("Offline dependencies do not match requirements.txt")
-            if not any(tag.endswith("-any") or ("manylinux" in tag and tag.endswith("_" + architecture)) for tag in tags):
-                raise RuntimeError("Offline wheel has the wrong platform")
+            if not supported.intersection(wheel_tags):
+                raise RuntimeError("Offline wheel has the wrong Python version, ABI or platform")
             installed[name] = metadata["Version"]
         if installed != required:
             raise RuntimeError("Incomplete offline dependencies for " + architecture)
         wheels.extend(candidates)
+    manifest = ROOT / "deployment/wheelhouse-sha256.json"
+    if manifest.is_symlink() or not manifest.is_file():
+        raise RuntimeError("Offline dependency hash manifest missing or linked")
+    expected = json.loads(manifest.read_text(encoding="utf-8"))
+    actual = {path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest() for path in wheels}
+    if expected != actual:
+        raise RuntimeError("Offline dependency hash mismatch")
     return wheels
 
 
@@ -51,7 +73,7 @@ def release_files():
              "pytest.ini", "README.md", ".gitignore", "conf/application.properties",
              "conf/endpoint_ai_proxy.sql", "conf/product.properties"}
     for pattern in ("controlserver/*.py", "controlserver/templates/*.html", "conf/*.example",
-                    "deploy/*", "docs/*.md", "tests/*.py", "tests/fixtures/*.json",
+                    "deploy/*", "docs/*.md", "tests/*.py", "tests/*.cjs", "tests/fixtures/*.json",
                     "tests/dotnet/*.cs", "tests/dotnet/*.csproj", "tools/*.py"):
         names.update(str(path.relative_to(ROOT)) for path in ROOT.glob(pattern) if path.is_file())
     paths = [ROOT / name for name in sorted(names) if (ROOT / name).is_file()]
@@ -63,24 +85,26 @@ def release_files():
     sys.path.insert(0, str(ROOT))
     from config import load_properties
     props = load_properties(ROOT / "conf/application.properties")
-    if any(value and (key == "transport.key" or any(word in key.lower() for word in ("password", "token", "hmac", "secret")))
+    if any(value and (key == "transport.key" or any(word in key.lower() for word in ("password", "token", "hmac", "secret", "seed")))
            for key, value in props.items()):
         raise RuntimeError("application.properties contains secrets; move them to deployment-only configuration")
     return paths
 
 
 def build_release(output, update=False):
+    if update:
+        require_update_validated()
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     files = release_files()
     if update:
-        files += offline_wheels()
+        files += offline_wheels() + [ROOT / "deployment/wheelhouse-sha256.json"]
         if any(p.is_symlink() for p in files):
             raise RuntimeError("Linked release file")
     manifest = {}
     with output.open("xb") as target, zipfile.ZipFile(target, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in files:
-            name = str(path.relative_to(ROOT))
+            name = path.relative_to(ROOT).as_posix()
             if not update:
                 name = "EndpointAIDLP-Server-" + RELEASE_VERSION + "/" + name
             archive.write(path, arcname=name)

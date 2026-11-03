@@ -24,7 +24,11 @@ function Set-PrivateBuildDirectory([string]$Path) {
   if (-not (Test-PrivateBuildDacl $current $desired)) {
     # Constructed descriptor only has modified DACL. Set-Acl is deliberately not used:
     # it can try to persist extra sections from the original descriptor.
-    $directory.SetAccessControl($desired)
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+      [IO.FileSystemAclExtensions]::SetAccessControl($directory,$desired)
+    } else {
+      $directory.SetAccessControl($desired)
+    }
   }
   $actual = Get-Acl -LiteralPath $Path
   if (-not (Test-PrivateBuildDacl $actual $desired)) { throw 'Private directory DACL validation failed.' }

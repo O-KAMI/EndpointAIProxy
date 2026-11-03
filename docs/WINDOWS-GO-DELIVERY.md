@@ -1,4 +1,7 @@
-# Windows Go 0.2.2 源码交付与 IOA 验证
+# Windows Go 交付与 IOA 验证
+
+当前验收候选为 0.2.11；按 [0.2.11 独立终端说明](WINDOWS-GO-0211-HANDOFF.md) 核对摘要并完成原生、
+回滚和 IOA 验收。当前长稳门禁为 8 小时，Windows 包按要求不签名。以下 0.2.2/0.2.3 内容是历史工具链与兼容性说明。
 
 Windows 0.2.3 本地扩展与当前门禁见 [验收记录](WINDOWS-023-ACCEPTANCE.md)。
 当前构建入口还必须提供 `-GatewayOrigin $DeploymentGatewayOrigin`，该变量由受控部署配置提供真实 HTTP(S) origin；
@@ -8,9 +11,9 @@ Windows 0.2.3 本地扩展与当前门禁见 [验收记录](WINDOWS-023-ACCEPTAN
 它不包含真实部署凭据、证书或旧 .NET 运行时。解压后保持目录结构，不能单独移动 WiX 项目。
 包内 Windows 原生安装结果在实际运行前均为待验；编译或 MSI 静态校验通过不能代表 IOA 已通过。
 
-## 当前验证状态（2026-10-18）
+## 历史验证状态（2026-10-18）
 
-当前交付为 `EndpointAIProxy-Go-Windows-0.2.2-20261018-r3-verified-source.zip`。源码与已冻结 r3 相同，新增完成后的验收证据及项目地图更新；旧 ZIP 保留。
+当时交付为 `EndpointAIProxy-Go-Windows-0.2.2-20261018-r3-verified-source.zip`。源码与已冻结 r3 相同，新增完成后的验收证据及项目地图更新；旧 ZIP 保留。
 
 r3 已通过本机五轮 .NET +5 ms 延迟门禁和四小时功能长稳（14,419.34 秒、23,040 请求、3 次重启），Go race/vet、三架构构建及 37 项隔离安装脚本测试通过。具体边界见 [本轮记录](CLIENT-SERVER-022-024-20261018.md) 和 [资源复核](CLIENT-PERFORMANCE-022-R3.md)。RSS 后段增长尚未解释，新增诊断独立预算仍待测；Windows PowerShell 5.1、原生 MSI、SYSTEM、IOA 覆盖升级和恢复仍必须在 Windows 验收。
 
@@ -27,23 +30,23 @@ Go 依赖从包内 vendor 使用，不需要 Bash、Python、C 编译器。脚�
 双击根 `Build-MSI.cmd`，按提示输入外部 `client-credentials.json` 的完整路径；或使用：
 
 ```powershell
-.\scripts\Build-MSI.ps1 -CredentialsFile C:\Secure\client-credentials.json -OutputDirectory C:\Secure\EndpointAIProxy-Go
+.\scripts\Build-MSI.ps1 -CredentialsFile C:\Secure\client-credentials.json -GatewayOrigin $DeploymentGatewayOrigin -OutputDirectory C:\Secure\EndpointAIProxy-Go
 ```
 
 凭据沿用 `origin/clientToken/policyHmacKey/transportKey/keyId` 五字段，须从受控渠道取得；
 不要将真实文件复制进源码目录、聊天或代码库。`origin` 为当前 AES 加密控制协议使用的 HTTP origin，
 不能带用户信息、业务路径、查询或片段。输入验证只输出错误类型，不输出字段值。
 
-默认构建 `EndpointAIDLP-Client-0.2.2-go-win-x64.msi`，执行 Go 测试、静态分析、GUI helper、
+默认构建 `EndpointAIDLP-Client-0.2.5-go-win-x64.msi`，执行 Go 测试、静态分析、GUI helper、
 MSI 身份和事务序列及仅含 Go 载荷的校验。输出包括 MSI、SHA256、manifest、校验报告和日志工具，
 保存在仅构建用户、SYSTEM 与管理员可读的目录。临时凭据和含凭据 CAB 在结束时清理。
 输出 MSI 不覆盖已有同名候选；再次构建请选择新目录。整个构建过程不安装程序或修改服务。
 
-未提供签名参数时包明确标记为 `unsigned-test-candidate`，是否允许通过 IOA 推送取决于环境策略。
+本次 Windows 推广包不进行签名，包标记为 `unsigned`；IOA 环境策略、最终包摘要和原生安装验证仍须通过。
 如需签名，使用构建用户证书库 `CurrentUser\My` 中已有代码签名证书：
 
 ```powershell
-.\scripts\Build-MSI.ps1 -CredentialsFile C:\Secure\client-credentials.json -OutputDirectory C:\Secure\SignedCandidate `
+.\scripts\Build-MSI.ps1 -CredentialsFile C:\Secure\client-credentials.json -GatewayOrigin $DeploymentGatewayOrigin -OutputDirectory C:\Secure\SignedCandidate `
   -SigningCertificateThumbprint YOUR_CERTIFICATE_THUMBPRINT `
   -SignToolPath 'C:\Program Files (x86)\Windows Kits\10\bin\VERSION\x64\signtool.exe' `
   -TimestampUrl https://YOUR_APPROVED_TIMESTAMP_SERVICE
@@ -57,7 +60,7 @@ MSI 身份和事务序列及仅含 Go 载荷的校验。输出包括 MSI、SHA25
 默认测试仅使用临时合成配置和 DPAPI fixture，不执行安装/卸载：
 
 ```powershell
-.\scripts\Test-Windows.ps1 -MsiFile C:\Secure\EndpointAIDLP-Client-0.2.2-go-win-x64.msi
+.\scripts\Test-Windows.ps1 -MsiFile C:\Secure\EndpointAIDLP-Client-0.2.5-go-win-x64.msi
 ```
 
 DPAPI 检查通过 PowerShell 5.1 的 .NET `ProtectedData` 与 Go 实际 protector 双向互读，
@@ -76,15 +79,15 @@ IOA 联调前必须部署该兼容网关，避免工号在联调中丢失。源�
 
 退出码 0 为成功；3010 表示成功但需重启。其余退出码视为失败，并收集受保护诊断。
 只有明确选择 `-MachineAction Install` 或 `Uninstall`，测试脚本才操作本机 MSI；需要管理员或 IOA 身份。
-显式安装及 4 小时健康/资源采样示例：
+显式安装及 8 小时健康/资源采样示例：
 
 ```powershell
 .\scripts\Test-Windows.ps1 -MsiFile C:\Secure\EndpointAIDLP-Client-0.2.2-go-win-x64.msi `
-  -MachineAction Install -DurationHours 4
+  -MachineAction Install -DurationHours 8
 ```
 
-测试报告记录实际动作、DPAPI结果、采样时长和重启要求。小于 4 小时不能记为长稳通过。
-4 小时期间还应覆盖发现、心跳、原厂/网关切换、并发请求、SSE 取消、捕获及日志清理；
+测试报告记录实际动作、DPAPI结果、采样时长和重启要求。小于 8 小时不能记为当前长稳通过。
+8 小时期间还应覆盖发现、心跳、原厂/网关切换、并发请求、SSE 取消、捕获及日志清理；
 健康采样不能单独证明这些业务项。通过 IOA 取得的业务/部署结果需补入验收记录。
 
 完整验收至少覆盖首装、.NET 0.1.22 升 Go、重复安装、注入失败后的原版恢复、重启自动运行、

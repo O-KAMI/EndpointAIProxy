@@ -31,6 +31,7 @@ type Store struct {
 type CachedPolicy struct {
 	Policy        contracts.Policy
 	Signature     string
+	RawPolicy     []byte
 	ReceivedAtUTC time.Time
 }
 type Credential struct {
@@ -102,7 +103,89 @@ CREATE TABLE IF NOT EXISTS client_identity(singleton_id INTEGER PRIMARY KEY CHEC
 CREATE TABLE IF NOT EXISTS cached_policy(singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),policy_json TEXT NOT NULL,signature TEXT NOT NULL,policy_version INTEGER NOT NULL,server_instance_id TEXT NOT NULL,received_at_utc TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS device_credential(singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),protected_token BLOB NOT NULL,enrolled_at_utc TEXT NOT NULL,server_origin TEXT NULL,server_certificate_spki_sha256 TEXT NULL);
 CREATE TABLE IF NOT EXISTS client_operation_state(singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),operation_state INTEGER NOT NULL,updated_at_utc TEXT NOT NULL,last_error_code TEXT NULL,last_error_summary TEXT NULL);
-CREATE TABLE IF NOT EXISTS remote_command_receipts(command_id TEXT PRIMARY KEY,command_type INTEGER NOT NULL,status INTEGER NOT NULL,received_at_utc TEXT NOT NULL,completed_at_utc TEXT NULL,result_code TEXT NULL,result_summary TEXT NULL,device_id TEXT NULL,issued_at_utc TEXT NULL,expires_at_utc TEXT NULL);`
+CREATE TABLE IF NOT EXISTS remote_command_receipts(command_id TEXT PRIMARY KEY,command_type INTEGER NOT NULL,status INTEGER NOT NULL,received_at_utc TEXT NOT NULL,completed_at_utc TEXT NULL,result_code TEXT NULL,result_summary TEXT NULL,device_id TEXT NULL,issued_at_utc TEXT NULL,expires_at_utc TEXT NULL);
+CREATE TABLE IF NOT EXISTS pending_control_events(event_id TEXT PRIMARY KEY,event_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS device_transport_state(singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),protected_state BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS pending_device_enrollment(singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),protected_state BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS pending_credential_rotation(singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),protected_state BLOB NOT NULL);`
+
+const PendingEventLimit = 1000
+
+// Queue operations use the existing protected state directory and the same SQLite transaction boundary.
+func (s *Store) EnqueueEvent(ctx context.Context, event contracts.EndpointEvent) (int64, error) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return 0, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "INSERT INTO pending_control_events (event_id,event_json) VALUES (?,?)", event.EventID, string(data)); err != nil {
+		return 0, err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM pending_control_events WHERE rowid IN
+		(SELECT rowid FROM pending_control_events ORDER BY rowid LIMIT
+		(SELECT MAX(COUNT(*)-?,0) FROM pending_control_events))`, PendingEventLimit)
+	if err != nil {
+		return 0, err
+	}
+	dropped, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return dropped, tx.Commit()
+}
+
+// Count only queue rows, without decoding or returning any event payload. The
+// extra row detects an over-limit/corrupt queue without scanning it in full.
+func (s *Store) PendingEventCount(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM
+		(SELECT 1 FROM pending_control_events LIMIT ?)`, PendingEventLimit+1).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	if count > PendingEventLimit {
+		return 0, errors.New("EVENT_QUEUE_LIMIT_EXCEEDED")
+	}
+	return count, nil
+}
+
+func (s *Store) PendingEvents(ctx context.Context) ([]contracts.EndpointEvent, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT event_json FROM pending_control_events ORDER BY rowid")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []contracts.EndpointEvent
+	for rows.Next() {
+		var data string
+		var event contracts.EndpointEvent
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) DeletePendingEvents(ctx context.Context, events []contracts.EndpointEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	args := make([]any, len(events))
+	placeholders := make([]string, len(events))
+	for i, event := range events {
+		args[i], placeholders[i] = event.EventID, "?"
+	}
+	_, err := s.db.ExecContext(ctx, "DELETE FROM pending_control_events WHERE event_id IN ("+strings.Join(placeholders, ",")+")", args...)
+	return err
+}
 
 func Open(path string, p Protector) (*Store, error) {
 	if p == nil {
@@ -365,6 +448,16 @@ func (s *Store) GetOrCreateDeviceID(ctx context.Context) (string, error) {
 	}
 	return id, e
 }
+
+// ExistingDeviceID never creates a new identity during credential recovery.
+func (s *Store) ExistingDeviceID(ctx context.Context) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, "SELECT device_id FROM client_identity WHERE singleton_id=1").Scan(&id)
+	if err == nil {
+		_, err = uuid.Parse(id)
+	}
+	return id, err
+}
 func (s *Store) LoadPolicy(ctx context.Context) (*CachedPolicy, error) {
 	var b, received string
 	v := &CachedPolicy{}
@@ -378,13 +471,25 @@ func (s *Store) LoadPolicy(ctx context.Context) (*CachedPolicy, error) {
 	if e = json.Unmarshal([]byte(b), &v.Policy); e != nil {
 		return nil, e
 	}
+	v.RawPolicy = []byte(b)
 	v.ReceivedAtUTC, e = parse(received)
 	return v, e
 }
-func (s *Store) SavePolicy(ctx context.Context, p contracts.Policy, signature string, received time.Time) error {
+func (s *Store) SavePolicy(ctx context.Context, p contracts.Policy, signature string, received time.Time, authenticatedRaw ...[]byte) error {
 	b, e := json.Marshal(p)
 	if e != nil {
 		return e
+	}
+	if len(authenticatedRaw) > 0 && authenticatedRaw[0] != nil {
+		var verified contracts.Policy
+		if e = json.Unmarshal(authenticatedRaw[0], &verified); e != nil {
+			return e
+		}
+		canonical, err := json.Marshal(verified)
+		if err != nil || string(canonical) != string(b) {
+			return errors.New("authenticated policy body mismatch")
+		}
+		b = authenticatedRaw[0]
 	}
 	_, e = s.db.ExecContext(ctx, `INSERT INTO cached_policy VALUES(1,?,?,?,?,?) ON CONFLICT(singleton_id) DO UPDATE SET policy_json=excluded.policy_json,signature=excluded.signature,policy_version=excluded.policy_version,server_instance_id=excluded.server_instance_id,received_at_utc=excluded.received_at_utc`, string(b), signature, p.PolicyVersion, p.ServerInstanceID, format(received))
 	return e
@@ -424,6 +529,92 @@ func (s *Store) SaveCredential(ctx context.Context, v Credential) error {
 	_, e = s.db.ExecContext(ctx, `INSERT INTO device_credential VALUES(1,?,?,?,?) ON CONFLICT(singleton_id) DO UPDATE SET protected_token=excluded.protected_token,enrolled_at_utc=excluded.enrolled_at_utc,server_origin=excluded.server_origin,server_certificate_spki_sha256=excluded.server_certificate_spki_sha256`, b, format(v.EnrolledAtUTC), v.ServerOrigin, v.ServerCertificateSPKISHA256)
 	return e
 }
+
+// LoadDeviceTransport and SaveDeviceTransport protect the negotiated key with the
+// same platform protector and directory permissions as the device credential.
+func (s *Store) LoadDeviceTransport(ctx context.Context) (string, error) {
+	var b []byte
+	err := s.db.QueryRowContext(ctx, "SELECT protected_state FROM device_transport_state WHERE singleton_id=1").Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return s.p.Unprotect(b)
+}
+
+func (s *Store) SaveDeviceTransport(ctx context.Context, value string) error {
+	b, err := s.p.Protect(value)
+	if err != nil {
+		return err
+	}
+	defer clear(b)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO device_transport_state VALUES(1,?) ON CONFLICT(singleton_id) DO UPDATE SET protected_state=excluded.protected_state`, b)
+	return err
+}
+
+// PendingEnrollment is persisted before the first network request so an
+// accepted enrollment can be retried after a lost response or process restart.
+func (s *Store) LoadPendingEnrollment(ctx context.Context) (string, error) {
+	var b []byte
+	err := s.db.QueryRowContext(ctx, "SELECT protected_state FROM pending_device_enrollment WHERE singleton_id=1").Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return s.p.Unprotect(b)
+}
+func (s *Store) SavePendingEnrollment(ctx context.Context, value string) error {
+	b, err := s.p.Protect(value)
+	if err != nil {
+		return err
+	}
+	defer clear(b)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO pending_device_enrollment VALUES(1,?) ON CONFLICT(singleton_id) DO UPDATE SET protected_state=excluded.protected_state`, b)
+	return err
+}
+func (s *Store) CommitEnrollment(ctx context.Context, v Credential) error {
+	return s.commitCredential(ctx, v, false)
+}
+
+// RecoverCredential is used only after explicit recovery verifies the new
+// credential against the configured server, with the client service stopped.
+func (s *Store) RecoverCredential(ctx context.Context, v Credential) error {
+	return s.commitCredential(ctx, v, true)
+}
+
+func (s *Store) commitCredential(ctx context.Context, v Credential, recovery bool) error {
+	b, err := s.p.Protect(v.Token)
+	if err != nil {
+		return err
+	}
+	defer clear(b)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO device_credential VALUES(1,?,?,?,?) ON CONFLICT(singleton_id) DO UPDATE SET protected_token=excluded.protected_token,enrolled_at_utc=excluded.enrolled_at_utc,server_origin=excluded.server_origin,server_certificate_spki_sha256=excluded.server_certificate_spki_sha256`, b, format(v.EnrolledAtUTC), v.ServerOrigin, v.ServerCertificateSPKISHA256)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM pending_device_enrollment WHERE singleton_id=1"); err != nil {
+		return err
+	}
+	if recovery {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM device_transport_state WHERE singleton_id=1"); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, "DELETE FROM pending_credential_rotation WHERE singleton_id=1"); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) LoadOperationState(ctx context.Context) (OperationState, error) {
 	v := OperationState{State: contracts.ClientOperationStateEnabled, UpdatedAtUTC: time.Now().UTC()}
 	var updated string

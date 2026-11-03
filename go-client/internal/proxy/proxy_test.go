@@ -18,6 +18,76 @@ import (
 
 const fixtureID = "abcdefghijklmnopqrstuv"
 
+func TestConcurrentRequestLimitReleasesAfterCompletion(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	h := fixtureHandler(upstream.URL)
+	h.Slots = make(chan struct{}, 1)
+	done := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "/r/"+fixtureID, nil))
+		done <- w.Code
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("first request did not reach upstream")
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/r/"+fixtureID, nil))
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != "1" {
+		close(release)
+		t.Fatalf("expected bounded overload response, got %d", w.Code)
+	}
+	close(release)
+	if code := <-done; code != http.StatusNoContent || len(h.Slots) != 0 {
+		t.Fatalf("request did not release slot: %d", code)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/r/"+fixtureID, nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("request after recovery failed: %d", w.Code)
+	}
+}
+
+func TestIdleUpstreamStreamIsCancelledAndReported(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: first\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	h := fixtureHandler(upstream.URL)
+	h.streamIdleTimeout = 50 * time.Millisecond
+	outcomes := make(chan string, 1)
+	h.Observe = func(_ Record, _ int, outcome string, _ time.Duration) { outcomes <- outcome }
+	server := httptest.NewServer(h)
+	defer server.Close()
+	response, err := server.Client().Get(server.URL + "/r/" + fixtureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	_, _ = io.ReadAll(response.Body)
+	select {
+	case outcome := <-outcomes:
+		if outcome != "GATEWAY_STREAM_IDLE_TIMEOUT" {
+			t.Fatalf("unexpected outcome %q", outcome)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle stream was not cancelled")
+	}
+}
+
 type fixtureStore struct{ route contracts.Route }
 
 func (s fixtureStore) FindRoute(context.Context, string) (*contracts.Route, error) {

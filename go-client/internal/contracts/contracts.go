@@ -654,24 +654,32 @@ func (v *RemoteCommandStatus) UnmarshalJSON(b []byte) error {
 }
 
 type Policy struct {
-	SchemaVersion            int       `json:"schemaVersion"`
-	ServerInstanceID         string    `json:"serverInstanceId"`
-	PolicyVersion            int64     `json:"policyVersion"`
-	Enabled                  bool      `json:"enabled"`
-	RouteMode                string    `json:"routeMode"`
-	GatewayOrigin            *string   `json:"gatewayOrigin"`
-	AllowInsecureGateway     bool      `json:"allowInsecureGateway"`
-	PollIntervalSeconds      int       `json:"pollIntervalSeconds"`
-	HeartbeatIntervalSeconds int       `json:"heartbeatIntervalSeconds"`
-	IssuedAtUTC              time.Time `json:"issuedAtUtc"`
-	AllowlistedBaseURLs      []string  `json:"allowlistedBaseUrls"`
+	SchemaVersion            int           `json:"schemaVersion"`
+	ServerInstanceID         string        `json:"serverInstanceId"`
+	PolicyVersion            int64         `json:"policyVersion"`
+	Enabled                  bool          `json:"enabled"`
+	RouteMode                string        `json:"routeMode"`
+	GatewayOrigin            *string       `json:"gatewayOrigin"`
+	AllowInsecureGateway     bool          `json:"allowInsecureGateway"`
+	PollIntervalSeconds      int           `json:"pollIntervalSeconds"`
+	HeartbeatIntervalSeconds int           `json:"heartbeatIntervalSeconds"`
+	IssuedAtUTC              time.Time     `json:"issuedAtUtc"`
+	AllowlistedBaseURLs      []string      `json:"allowlistedBaseUrls"`
+	AllowlistedDomains       []string      `json:"allowlistedDomains,omitempty"`
+	RoutingRules             []RoutingRule `json:"routingRules,omitempty"`
+}
+type RoutingRule struct {
+	Domain        string  `json:"domain"`
+	RouteMode     string  `json:"routeMode"`
+	GatewayOrigin *string `json:"gatewayOrigin,omitempty"`
 }
 type PolicyClientState struct {
-	LastReceivedVersion *int64            `json:"lastReceivedVersion"`
-	AppliedVersion      *int64            `json:"appliedVersion"`
-	ApplyStatus         PolicyApplyStatus `json:"applyStatus"`
-	LastErrorCode       *string           `json:"lastErrorCode"`
-	LastErrorSummary    *string           `json:"lastErrorSummary"`
+	AppliedSchemaVersion int               `json:"appliedSchemaVersion,omitempty"`
+	LastReceivedVersion  *int64            `json:"lastReceivedVersion"`
+	AppliedVersion       *int64            `json:"appliedVersion"`
+	ApplyStatus          PolicyApplyStatus `json:"applyStatus"`
+	LastErrorCode        *string           `json:"lastErrorCode"`
+	LastErrorSummary     *string           `json:"lastErrorSummary"`
 }
 type ProxyClientState struct {
 	State            ProxyState `json:"state"`
@@ -680,10 +688,13 @@ type ProxyClientState struct {
 	AuditState       AuditState `json:"auditState"`
 }
 type DeviceEnrollmentRequest struct {
-	SchemaVersion  int    `json:"schemaVersion"`
-	DeviceID       string `json:"deviceId"`
-	Hostname       string `json:"hostname"`
-	ServiceVersion string `json:"serviceVersion"`
+	SchemaVersion       int    `json:"schemaVersion"`
+	DeviceID            string `json:"deviceId"`
+	Hostname            string `json:"hostname"`
+	ServiceVersion      string `json:"serviceVersion"`
+	InitialDeviceToken  string `json:"initialDeviceToken,omitempty"`
+	PreviousDeviceToken string `json:"previousDeviceToken,omitempty"`
+	PreserveDeviceToken bool   `json:"preserveDeviceToken,omitempty"`
 }
 type DeviceEnrollmentResponse struct {
 	DeviceID      string    `json:"deviceId"`
@@ -755,14 +766,15 @@ type HeartbeatResponse struct {
 	NextHeartbeatSeconds  int       `json:"nextHeartbeatSeconds"`
 }
 type DeviceRuntimeState struct {
-	ServiceStartedAtUTC    time.Time            `json:"serviceStartedAtUtc"`
-	UptimeSeconds          int64                `json:"uptimeSeconds"`
-	OperationState         ClientOperationState `json:"operationState"`
-	ProxyListenerAvailable bool                 `json:"proxyListenerAvailable"`
-	LastControlSyncAtUTC   *time.Time           `json:"lastControlSyncAtUtc"`
-	LastReconcileAtUTC     *time.Time           `json:"lastReconcileAtUtc"`
-	LastReconcileResult    *string              `json:"lastReconcileResult"`
-	LastReconcileErrorCode *string              `json:"lastReconcileErrorCode"`
+	SupportedPolicySchemaVersion int                  `json:"supportedPolicySchemaVersion,omitempty"`
+	ServiceStartedAtUTC          time.Time            `json:"serviceStartedAtUtc"`
+	UptimeSeconds                int64                `json:"uptimeSeconds"`
+	OperationState               ClientOperationState `json:"operationState"`
+	ProxyListenerAvailable       bool                 `json:"proxyListenerAvailable"`
+	LastControlSyncAtUTC         *time.Time           `json:"lastControlSyncAtUtc"`
+	LastReconcileAtUTC           *time.Time           `json:"lastReconcileAtUtc"`
+	LastReconcileResult          *string              `json:"lastReconcileResult"`
+	LastReconcileErrorCode       *string              `json:"lastReconcileErrorCode"`
 }
 type AgentEndpointAsset struct {
 	AssetID                    string                   `json:"assetId"`
@@ -796,23 +808,48 @@ type ProxyActivityAsset struct {
 	FailureCountSinceBoot            int64             `json:"failureCountSinceBoot"`
 }
 type HeartbeatV2Request struct {
-	SchemaVersion int                  `json:"schemaVersion"`
-	HeartbeatID   string               `json:"heartbeatId"`
-	ObservedAtUTC time.Time            `json:"observedAtUtc"`
-	Device        DeviceIdentity       `json:"device"`
-	Runtime       DeviceRuntimeState   `json:"runtime"`
-	Policy        PolicyClientState    `json:"policy"`
-	Proxy         ProxyClientState     `json:"proxy"`
-	Users         []EndpointUser       `json:"users"`
-	Agents        []AgentInventoryItem `json:"agents"`
-	Endpoints     []AgentEndpointAsset `json:"endpoints"`
-	Activity      []ProxyActivityAsset `json:"activity"`
+	SchemaVersion           int                  `json:"schemaVersion"`
+	HeartbeatID             string               `json:"heartbeatId"`
+	ObservedAtUTC           time.Time            `json:"observedAtUtc"`
+	Device                  DeviceIdentity       `json:"device"`
+	Runtime                 DeviceRuntimeState   `json:"runtime"`
+	Policy                  PolicyClientState    `json:"policy"`
+	Proxy                   ProxyClientState     `json:"proxy"`
+	Users                   []EndpointUser       `json:"users"`
+	Agents                  []AgentInventoryItem `json:"agents"`
+	Endpoints               []AgentEndpointAsset `json:"endpoints"`
+	Activity                []ProxyActivityAsset `json:"activity"`
+	StatelessPolicyVersions bool                 `json:"statelessPolicyVersions,omitempty"`
+	InventoryUnchanged      bool                 `json:"inventoryUnchanged,omitempty"`
+	CompactInventory        bool                 `json:"compactInventory,omitempty"`
+	Ed25519Signatures       bool                 `json:"ed25519Signatures,omitempty"`
+	DeviceTransportV2       bool                 `json:"deviceTransportV2,omitempty"`
+	CredentialRotationV1    bool                 `json:"credentialRotationV1,omitempty"`
+}
+type DeviceTransportV2 struct {
+	KeyID string `json:"keyId"`
+	Key   []byte `json:"key"`
+}
+type CredentialRotationCapability struct {
+	MinAgeSeconds int64 `json:"minAgeSeconds"`
+}
+
+// CredentialRotationState is committed atomically by the protected state store.
+type CredentialRotationState struct {
+	PreviousToken, Pending, Token, Transport, Origin, Pin string
+	ActivatedAtUTC                                        time.Time
 }
 type HeartbeatV2Response struct {
-	ServerTimeUTC         time.Time            `json:"serverTimeUtc"`
-	AcceptedPolicyVersion int64                `json:"acceptedPolicyVersion"`
-	NextHeartbeatSeconds  int                  `json:"nextHeartbeatSeconds"`
-	Command               *SignedRemoteCommand `json:"command"`
+	ServerTimeUTC           time.Time                     `json:"serverTimeUtc"`
+	AcceptedPolicyVersion   int64                         `json:"acceptedPolicyVersion"`
+	NextHeartbeatSeconds    int                           `json:"nextHeartbeatSeconds"`
+	Command                 *SignedRemoteCommand          `json:"command"`
+	StatelessPolicyVersions bool                          `json:"statelessPolicyVersions,omitempty"`
+	LightweightInventory    bool                          `json:"lightweightInventory,omitempty"`
+	CompactInventory        bool                          `json:"compactInventory,omitempty"`
+	DeviceTransport         bool                          `json:"deviceTransport,omitempty"`
+	DeviceTransportV2       *DeviceTransportV2            `json:"deviceTransportV2,omitempty"`
+	CredentialRotationV1    *CredentialRotationCapability `json:"credentialRotationV1,omitempty"`
 }
 type EndpointEvent struct {
 	EventID         string                     `json:"eventId"`

@@ -458,7 +458,7 @@ func (m *Manager) dshProfile(ctx context.Context, p Profile, detach bool) ([]Res
 		return nil, retireErr
 	}
 	for _, doc := range docs {
-		if doc.profile == "desktop" && (p.DSHVersion == DSHDesktopSupportedVersion || detach && m.hasAccountJournal(p, doc)) {
+		if doc.profile == "desktop" && (contracts.DSHDesktopAccountVersionSupported(p.DSHVersion) || detach && m.hasAccountJournal(p, doc)) {
 			rs, err := m.dshAccountProfile(ctx, p, doc, detach)
 			results = append(results, rs...)
 			if err != nil {
@@ -692,7 +692,7 @@ func (m *Manager) inspectDSHWithRoutes(ctx context.Context, profiles []Profile, 
 			errs = append(errs, e)
 		}
 		for _, doc := range docs {
-			if doc.profile == "desktop" && (p.DSHVersion == DSHDesktopSupportedVersion || m.hasAccountJournal(p, doc)) {
+			if doc.profile == "desktop" && (contracts.DSHDesktopAccountVersionSupported(p.DSHVersion) || m.hasAccountJournal(p, doc)) {
 				identity := dshIdentity(p, doc.root, doc.profile, "llm-deepseek-account", "", "messages", "account")
 				asset := Endpoint{SID: p.SID, Family: "deepseekHarness", ProviderID: identity, Mode: "unsupported", Source: 1, Current: true, RouteStatus: 5}
 				if p.DSHDesktopAccountVerified && len(doc.tree.Content) > 0 {

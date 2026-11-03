@@ -5,6 +5,8 @@ import logging
 import os
 import base64
 import secrets
+import copy
+import re
 from pathlib import Path
 from config import Config
 
@@ -12,11 +14,11 @@ from config import Config
 def main():
     parser = argparse.ArgumentParser(description="EndpointAIDLP maintenance")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("check-db", "init-db", "migrate-db", "backup", "restore"):
+    for name in ("check-db", "init-db", "migrate-db", "revert-unused-rollout-schema", "revert-unused-policy-rollout-schema", "ensure-scale-indexes", "ensure-credential-rotation", "refresh-analytics-cache", "backup", "restore", "advance-restored-watermark"):
         command = sub.add_parser(name)
         command.add_argument("--env", choices=("sit", "prd"), required=True)
         command.add_argument("--config-dir")
-        if name in ("init-db", "migrate-db"):
+        if name in ("init-db", "migrate-db", "revert-unused-rollout-schema", "revert-unused-policy-rollout-schema", "ensure-scale-indexes", "ensure-credential-rotation"):
             command.add_argument("--service-stopped", action="store_true", required=True,
                                  help="Assert that all application instances are stopped")
         if name == "backup":
@@ -26,6 +28,14 @@ def main():
             command.add_argument("--target-database", required=True)
             command.add_argument("--mysql", default="mysql")
             command.add_argument("--service-stopped", action="store_true", required=True)
+        if name == "advance-restored-watermark":
+            command.add_argument("--target-database", required=True)
+            command.add_argument("--verified-issued-max", type=int, required=True)
+            command.add_argument("--actor", required=True)
+            command.add_argument("--evidence-reference", required=True)
+            command.add_argument("--service-stopped", action="store_true", required=True)
+            command.add_argument("--confirm-restored-target", action="store_true", required=True,
+                                 help="Assert that the distinct target is an isolated restored database")
     cert = sub.add_parser("certificate")
     cert.add_argument("--directory", required=True)
     cert.add_argument("--ip", default="10.220.22.112")
@@ -49,6 +59,8 @@ def main():
             raise SystemExit(2)
         return
     if args.command == "secrets":
+        if os.name != "posix":
+            raise SystemExit("Secret generation requires POSIX file permissions; run on the control server.")
         path = Path(args.output)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -75,9 +87,26 @@ def main():
             print(json.dumps(cur.fetchone()))
     elif args.command == "init-db":
         print(store.initialize_empty())
+        if cfg.CREDENTIAL_ROTATION:
+            from controlserver.credential_rotation import ensure_table
+            print(ensure_table(store))
+        if cfg.EMPLOYEE_INDEX:
+            store.ensure_scale_indexes()
         store.check_schema()
     elif args.command == "migrate-db":
         print(store.migrate())
+    elif args.command == "revert-unused-rollout-schema":
+        print(store.revert_unused_rollout_schema())
+    elif args.command == "revert-unused-policy-rollout-schema":
+        print(store.revert_unused_policy_rollout_schema())
+    elif args.command == "ensure-scale-indexes":
+        print(store.ensure_scale_indexes())
+    elif args.command == "ensure-credential-rotation":
+        from controlserver.credential_rotation import ensure_table
+        print(ensure_table(store))
+    elif args.command == "refresh-analytics-cache":
+        from controlserver.analytics_cache import refresh_cache
+        print(json.dumps(refresh_cache(store)))
     elif args.command == "backup":
         from controlserver.backup import run_backup
         print(run_backup(cfg, dump_binary=args.mysqldump))
@@ -85,6 +114,21 @@ def main():
         from controlserver.backup import restore_backup
         policy = restore_backup(cfg, args.archive, args.target_database, args.mysql)
         print(f"Restore validated: target={args.target_database} policyVersion={policy['policyVersion']}")
+        print("WARNING: Schema and checksum validation do not prove recovery is safe to serve. "
+              "Reconcile post-backup policy versions, credentials, commands and replay state "
+              "against independent evidence before connecting any clients.")
+    elif args.command == "advance-restored-watermark":
+        if (not re.fullmatch(r"[A-Za-z0-9_]{1,64}", args.target_database)
+                or args.target_database.casefold() == cfg.MYSQL_DATABASE.casefold()):
+            raise ValueError("A distinct restored target database is required")
+        from controlserver.recovery import advance_restored_policy_watermark
+        target = copy.copy(cfg)
+        target.MYSQL_DATABASE = args.target_database
+        restored = ControlStore(target)
+        restored.check_schema()
+        version = advance_restored_policy_watermark(restored, args.verified_issued_max, args.actor, args.evidence_reference)
+        print(f"Restored target policy version advanced: target={args.target_database} policyVersion={version}")
+        print("WARNING: This does not reconcile credentials, commands, replay state, or prove the supplied bound is complete.")
 
 
 if __name__ == "__main__":

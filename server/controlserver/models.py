@@ -147,6 +147,21 @@ class RemoteCommandStatus(WireEnum):
     Failed = "failed"
     Expired = "expired"
     Cancelled = "cancelled"
+    ResultUnknown = "resultUnknown"
+
+
+class ResolveUnknownCommandRequest(Contract):
+    reason: str
+
+class RecoverDeviceCredentialRequest(Contract):
+    hostname: str = Field(min_length=1, max_length=255)
+    reason: str = Field(min_length=1, max_length=256)
+
+class RoutingRule(Contract):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    domain: str
+    routeMode: RouteMode
+    gatewayOrigin: str | None = None
 
 class EndpointPolicy(Contract):
     schemaVersion: Int32
@@ -160,8 +175,11 @@ class EndpointPolicy(Contract):
     heartbeatIntervalSeconds: Int32
     issuedAtUtc: datetime
     allowlistedBaseUrls: list[str] | None = None
+    allowlistedDomains: list[str] | None = None
+    routingRules: list[RoutingRule] | None = None
 
 class PolicyClientState(Contract):
+    appliedSchemaVersion: Annotated[int, Field(ge=1, le=2)] = Field(default=1, exclude_if=lambda value: value == 1)
     lastReceivedVersion: Int64 | None = None
     appliedVersion: Int64 | None = None
     applyStatus: PolicyApplyStatus
@@ -179,11 +197,21 @@ class DeviceEnrollmentRequest(Contract):
     deviceId: UUID
     hostname: str
     serviceVersion: str
+    initialDeviceToken: str | None = Field(default=None, min_length=44, max_length=44, repr=False, strict=True)
+    previousDeviceToken: str | None = Field(default=None, max_length=512, repr=False)
+    preserveDeviceToken: bool = Field(default=False, strict=True)
 
 class DeviceEnrollmentResponse(Contract):
     deviceId: UUID
     deviceToken: str
     enrolledAtUtc: datetime
+
+class CredentialRotationPrepare(Contract):
+    rotationId: UUID
+    nextDeviceToken: str = Field(min_length=44, max_length=44, strict=True, repr=False)
+
+class CredentialRotationCommit(Contract):
+    rotationId: UUID
 
 class RemoteCommandPayload(Contract):
     schemaVersion: Int32
@@ -281,6 +309,7 @@ class HeartbeatResponse(Contract):
     nextHeartbeatSeconds: Int32
 
 class DeviceRuntimeState(Contract):
+    supportedPolicySchemaVersion: Annotated[int, Field(ge=1, le=2)] = Field(default=1, exclude_if=lambda value: value == 1)
     serviceStartedAtUtc: datetime
     uptimeSeconds: Int64
     operationState: ClientOperationState
@@ -333,12 +362,31 @@ class HeartbeatV2Request(Contract):
     agents: list[AgentInventoryItem]
     endpoints: list[AgentEndpointAsset]
     activity: list[ProxyActivityAsset]
+    statelessPolicyVersions: bool = Field(default=False, exclude_if=lambda value: not value)
+    inventoryUnchanged: bool = Field(default=False, exclude_if=lambda value: not value)
+    compactInventory: bool = Field(default=False, strict=True, exclude_if=lambda value: not value)
+    ed25519Signatures: bool = Field(default=False, exclude_if=lambda value: not value)
+    deviceTransportV2: bool = Field(default=False, strict=True, exclude_if=lambda value: not value)
+    credentialRotationV1: bool = Field(default=False, strict=True, exclude_if=lambda value: not value)
+
+class DeviceTransportV2Response(Contract):
+    keyId: str
+    key: str = Field(repr=False)
+
+class CredentialRotationCapability(Contract):
+    minAgeSeconds: Int32
 
 class HeartbeatV2Response(Contract):
     serverTimeUtc: datetime
     acceptedPolicyVersion: Int64
     nextHeartbeatSeconds: Int32
     command: SignedRemoteCommand | None = None
+    statelessPolicyVersions: bool = False
+    lightweightInventory: bool = False
+    compactInventory: bool = False
+    deviceTransport: bool = False
+    deviceTransportV2: DeviceTransportV2Response | None = Field(default=None, repr=False)
+    credentialRotationV1: CredentialRotationCapability | None = Field(default=None, exclude_if=lambda value: value is None)
 
 class PolicyUpdateRequest(Contract):
     expectedVersion: Int64
@@ -349,11 +397,62 @@ class PolicyUpdateRequest(Contract):
     pollIntervalSeconds: Int32
     heartbeatIntervalSeconds: Int32
     allowlistedBaseUrls: list[str] | None = None
+    allowlistedDomains: list[str] | None = None
+    routingRules: list[RoutingRule] | None = None
+
+class DevicePolicyOverrides(Contract):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    routeMode: RouteMode | None = None
+    gatewayOrigin: str | None = None
+    allowInsecureGateway: bool | None = None
+    allowlistedBaseUrls: list[str] | None = None
+    allowlistedDomains: list[str] | None = None
+    routingRules: list[RoutingRule] | None = None
+
+    @model_validator(mode="after")
+    def explicit_values(self):
+        if any(getattr(self, key) is None for key in self.model_fields_set if key != "gatewayOrigin"):
+            raise ValueError("Only gatewayOrigin can be null; omit fields to inherit.")
+        return self
+
+class DevicePolicyUpdateRequest(Contract):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    expectedVersion: Annotated[int, Field(ge=1, lt=2**63-1)]
+    overrides: DevicePolicyOverrides
+
+class DevicePolicyResetRequest(Contract):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    expectedVersion: Annotated[int, Field(ge=1, lt=2**63-1)]
 
 class CreateRemoteCommandRequest(Contract):
     type: RemoteCommandType
     reason: str
     expiresInMinutes: Int32
+
+class CreateRolloutRequest(Contract):
+    type: RemoteCommandType
+    reason: str = Field(min_length=1, max_length=256)
+    expiresInMinutes: Annotated[int, Field(ge=1, le=1440)]
+    maxPerSecond: Annotated[int, Field(ge=1, le=5000)]
+    deviceIds: list[UUID] = Field(min_length=1, max_length=150000)
+    confirmCount: Annotated[int, Field(ge=1, le=150000)]
+
+class CreatePolicyRolloutRequest(Contract):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    policy: PolicyUpdateRequest
+    reason: str = Field(min_length=1, max_length=256)
+    maxPerSecond: Annotated[int, Field(ge=1, le=5000)]
+    deviceIds: list[UUID] = Field(min_length=1, max_length=150000)
+    confirmCount: Annotated[int, Field(ge=1, le=150000)]
+
+class ExtendPolicyRolloutRequest(Contract):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    reason: str = Field(min_length=1, max_length=256)
+    deviceIds: list[UUID] = Field(min_length=1, max_length=150000)
+    confirmCount: Annotated[int, Field(ge=1, le=150000)]
+
+class RolloutChangeRequest(Contract):
+    reason: str = Field(min_length=1, max_length=256)
 
 
 for _contract in (EndpointPolicy, PolicyClientState, ProxyClientState, DeviceEnrollmentRequest, DeviceEnrollmentResponse, RemoteCommandPayload, SignedRemoteCommand, RemoteCommandStatusUpdate, EndpointEvent, EventBatchRequest, EventBatchResponse, ApiError, ApiErrorEnvelope, DeviceIdentity, EndpointUser, AgentInventoryItem, HeartbeatRequest, HeartbeatResponse, DeviceRuntimeState, AgentEndpointAsset, ProxyActivityAsset, HeartbeatV2Request, HeartbeatV2Response, PolicyUpdateRequest, CreateRemoteCommandRequest):

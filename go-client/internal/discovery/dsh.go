@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"endpointai/client/internal/contracts"
 	"endpointai/client/internal/platform"
 	"io"
 	"os"
@@ -98,7 +99,7 @@ func DSHProfileMetadata(ctx context.Context, profiles []platform.Profile, roots 
 				md.Version = v
 			}
 		}
-		md.DesktopAccountVerified = md.DesktopAccountVerified && md.Version == "0.2.1-rc.2"
+		md.DesktopAccountVerified = md.DesktopAccountVerified && contracts.DSHDesktopAccountVersionSupported(md.Version)
 		md.DesktopReferencesVerified = md.DesktopAccountVerified && desktopReferenceScopeKnown(running, p.SID)
 		out[p.SID] = md
 	}

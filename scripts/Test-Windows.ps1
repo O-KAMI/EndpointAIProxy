@@ -22,7 +22,7 @@ try {
   foreach ($name in @('GOTOOLCHAIN','CGO_ENABLED','GOOS','GOARCH','GOFLAGS')) { $environment[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
   $env:GOTOOLCHAIN='local'; $env:CGO_ENABLED='0'; $env:GOOS='windows'; $env:GOARCH='amd64'; $env:GOFLAGS=''
   $tools=Assert-WindowsBuildHost
- if(-not $ProductVersion){if($MsiFile){$ProductVersion=Get-MsiProductVersion $MsiFile}else{$ProductVersion='0.2.3'}}
+ if(-not $ProductVersion){if($MsiFile){$ProductVersion=Get-MsiProductVersion $MsiFile}else{$ProductVersion='0.2.6'}}
   if (-not $OutputDirectory) { $OutputDirectory=Join-Path $root ('artifacts/windows-test-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmss')) }
   $OutputDirectory=[IO.Path]::GetFullPath($OutputDirectory)
   Protect-BuildPath $OutputDirectory
@@ -90,7 +90,7 @@ try {
     $elapsed=([DateTime]::UtcNow - $started).TotalHours
     $checks += 'native service and Go health'
   }
-  Write-BuildJson (Join-Path $OutputDirectory 'windows-test-report.json') @{ status='passed'; checks=$checks; machineAction=$MachineAction; machineChangesPerformed=($MachineAction -ne 'None'); dpapiFixture='synthetic-only'; requestedDurationHours=$DurationHours; elapsedHours=$elapsed; duration4hCompleted=($DurationHours -ge 4 -and $elapsed -ge 4); rebootRequired=$rebootRequired; fullLifecycleAndIOAAcceptance='pending-unless-separately-recorded' }
+  Write-BuildJson (Join-Path $OutputDirectory 'windows-test-report.json') @{ status='passed'; checks=$checks; machineAction=$MachineAction; machineChangesPerformed=($MachineAction -ne 'None'); dpapiFixture='synthetic-only'; requestedDurationHours=$DurationHours; elapsedHours=$elapsed; duration4hCompleted=($DurationHours -ge 4 -and $elapsed -ge 4); duration8hCompleted=($DurationHours -ge 8 -and $elapsed -ge 8); rebootRequired=$rebootRequired; fullLifecycleAndIOAAcceptance='pending-unless-separately-recorded' }
   Write-Host 'Windows checks passed. See the protected report for what was actually tested.'
 } catch {
   if ($OutputDirectory -and (Test-Path -LiteralPath $OutputDirectory)) { Write-BuildJson (Join-Path $OutputDirectory 'windows-test-report.json') @{ status='failed'; stage=$stage; checksPassed=$checks; errorType=$_.Exception.GetType().Name; machineAction=$MachineAction; rebootRequired=$rebootRequired } }

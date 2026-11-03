@@ -1,15 +1,57 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"endpointai/client/internal/contracts"
 	"endpointai/client/internal/protect"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestPendingEventsSurviveRestartAndRemainBounded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	p, err := protect.NewFileKey(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for i := 0; i < 1001; i++ {
+		event := contracts.EndpointEvent{EventID: fmt.Sprintf("synthetic-%04d", i), OccurredAtUTC: time.Now().UTC(), Severity: contracts.EventSeverityWarning, Type: "client", Code: "TEST", Summary: "Synthetic event"}
+		dropped, err := s.EnqueueEvent(ctx, event)
+		if err != nil || dropped != int64(i/1000) {
+			t.Fatalf("enqueue %d dropped=%d: %v", i, dropped, err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	events, err := s.PendingEvents(ctx)
+	if err != nil || len(events) != 1000 || events[0].EventID != "synthetic-0001" {
+		t.Fatalf("pending after restart: %d, %v", len(events), err)
+	}
+	if err := s.DeletePendingEvents(ctx, events[:2]); err != nil {
+		t.Fatal(err)
+	}
+	events, err = s.PendingEvents(ctx)
+	if err != nil || len(events) != 998 || events[0].EventID != "synthetic-0003" {
+		t.Fatalf("pending after acknowledgement: %d, %v", len(events), err)
+	}
+}
 
 func TestLegacySchemaAndStateCompatibility(t *testing.T) {
 	dir := t.TempDir()
@@ -161,5 +203,92 @@ func TestOnlineBackupAndReadOnly(t *testing.T) {
 	}
 	if _, e = os.Stat(missing); !os.IsNotExist(e) {
 		t.Fatalf("missing database created: %v", e)
+	}
+}
+
+func TestDeviceTransportStateIsProtectedAndSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	protector, err := protect.NewFileKey(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path, protector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const secret = `{"syntheticKey":"sensitive-device-key"}`
+	if err = s.SaveDeviceTransport(ctx, secret); err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	if err = s.db.QueryRowContext(ctx, "SELECT protected_state FROM device_transport_state").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("sensitive-device-key")) {
+		t.Fatal("stored state is not protected")
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path, protector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err := s.LoadDeviceTransport(ctx)
+	if err != nil || got != secret {
+		t.Fatalf("state not restored: %v", err)
+	}
+}
+
+func TestEnrollmentCredentialAndPendingStateCommitTogether(t *testing.T) {
+	dir := t.TempDir()
+	protector, err := protect.NewFileKey(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(filepath.Join(dir, "state.db"), protector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	const pending = `{"token":"synthetic-pending-secret"}`
+	if err = store.SavePendingEnrollment(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	if err = store.db.QueryRowContext(ctx, "SELECT protected_state FROM pending_device_enrollment").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("synthetic-pending-secret")) {
+		t.Fatal("pending token stored in clear")
+	}
+	if _, err = store.db.Exec(`CREATE TRIGGER reject_pending_delete BEFORE DELETE ON pending_device_enrollment BEGIN SELECT RAISE(ABORT, 'synthetic'); END`); err != nil {
+		t.Fatal(err)
+	}
+	credential := Credential{Token: "synthetic-device-token", EnrolledAtUTC: time.Now().UTC()}
+	if err = store.CommitEnrollment(ctx, credential); err == nil {
+		t.Fatal("failed deletion committed credential")
+	}
+	if got, err := store.LoadCredential(ctx); err != nil || got != nil {
+		t.Fatal("credential transaction was not rolled back")
+	}
+	if got, err := store.LoadPendingEnrollment(ctx); err != nil || got != pending {
+		t.Fatal("pending enrollment was lost")
+	}
+	if _, err = store.db.Exec("DROP TRIGGER reject_pending_delete"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.CommitEnrollment(ctx, credential); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.LoadPendingEnrollment(ctx); err != nil || got != "" {
+		t.Fatal("pending enrollment remains")
+	}
+	if got, err := store.LoadCredential(ctx); err != nil || got == nil || got.Token != credential.Token {
+		t.Fatal("credential missing")
 	}
 }

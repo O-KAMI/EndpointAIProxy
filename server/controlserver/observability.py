@@ -1,5 +1,35 @@
 """Bounded exception metadata without messages, values, locals or filesystem paths."""
 import re
+import threading
+
+
+class PoolMetrics:
+    """Per-worker connection-pool totals; no credentials or request data."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._attempts = self._exhausted = self._in_use = 0
+        self._wait_ms = self._max_wait_ms = 0.0
+
+    def acquired(self, seconds, success):
+        elapsed = max(0.0, seconds * 1000)
+        with self._lock:
+            self._attempts += 1
+            self._wait_ms += elapsed
+            self._max_wait_ms = max(self._max_wait_ms, elapsed)
+            if success:
+                self._in_use += 1
+            else:
+                self._exhausted += 1
+
+    def released(self):
+        with self._lock:
+            self._in_use -= 1
+
+    def snapshot(self):
+        with self._lock:
+            return dict(attempts=self._attempts, exhausted=self._exhausted,
+                        inUse=self._in_use, waitMilliseconds=round(self._wait_ms, 3),
+                        maxWaitMilliseconds=round(self._max_wait_ms, 3))
 
 _TYPES = {"RuntimeError", "ValueError", "TypeError", "OSError", "PermissionError",
           "FileNotFoundError", "TimeoutError", "ConnectionError", "OperationalError",

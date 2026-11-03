@@ -1,0 +1,17 @@
+# Example only: place the application in ~/endpointai-server before enabling.
+[Unit]
+Description=EndpointAIDLP client control ingress (user service)
+
+[Service]
+Type=simple
+WorkingDirectory=%h/endpointai-server
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=%h/endpointai-server/.venv/bin/python %h/endpointai-server/start.py --check --role client --port 18080
+ExecStart=%h/endpointai-server/.venv/bin/python %h/endpointai-server/start.py --role client --port 18080
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=75
+UMask=0027
+
+[Install]
+WantedBy=default.target

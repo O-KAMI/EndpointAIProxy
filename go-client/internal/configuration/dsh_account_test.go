@@ -14,7 +14,7 @@ import (
 func desktopAccountFixture(t *testing.T) (*Manager, Profile, string, *proxy.AccountListeners) {
 	t.Helper()
 	m, p := fixtureManager(t)
-	p.DSHVersion, p.DSHDesktopAccountVerified = DSHDesktopSupportedVersion, true
+	p.DSHVersion, p.DSHDesktopAccountVerified = "0.2.1-rc.2", true
 	m.EnableDSH = true
 	listeners := proxy.NewAccountListeners(http.NotFoundHandler())
 	t.Cleanup(listeners.Close)
@@ -23,6 +23,31 @@ func desktopAccountFixture(t *testing.T) (*Manager, Profile, string, *proxy.Acco
 	path := writeDSHFixture(t, p, root, "desktop", "- id: ui-chat\n  config: {theme: retained}\n")
 	writeFixture(t, filepath.Join(filepath.Dir(path), "cordis.yml"), "[]\n")
 	return m, p, path, listeners
+}
+
+func TestDesktopRC3AttachRestoreAndRetireWithOtherAgents(t *testing.T) {
+	m, p, path, _ := desktopAccountFixture(t)
+	p.DSHVersion = "0.2.1-rc.3"
+	writeFixture(t, configPath(p, "claude"), `{"env":{"ANTHROPIC_BASE_URL":"https://claude.example"}}`)
+	ctx := context.Background()
+	if results, err := m.Reconcile(ctx, []Profile{p}); err != nil {
+		t.Fatal(results, err)
+	}
+	routes, _ := m.Store.ListRoutes(ctx)
+	if len(routes) != 2 {
+		t.Fatal("rc.3 and Claude should both attach", routes)
+	}
+	if results, err := m.DetachAll(ctx, []Profile{p}); err != nil {
+		t.Fatal(results, err)
+	}
+	after, _ := os.ReadFile(path)
+	if strings.Contains(string(after), "inferenceOrigin") || strings.Contains(string(after), "baseURL") || !strings.Contains(string(after), "theme: retained") {
+		t.Fatal("rc.3 patch not restored")
+	}
+	routes, _ = m.Store.ListRoutes(ctx)
+	if len(routes) != 0 {
+		t.Fatal("rc.3 reference scan left retired routes", routes)
+	}
 }
 
 func TestDesktopAccountAttachRestartDetachAndCredentialOwnership(t *testing.T) {

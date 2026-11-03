@@ -3,6 +3,7 @@ package discovery
 import (
 	"encoding/binary"
 	"encoding/json"
+	"endpointai/client/internal/contracts"
 	"endpointai/client/internal/platform"
 	"io"
 	"os"
@@ -165,7 +166,7 @@ func dshDesktopAccountRuntime(path string) (string, bool) {
 		}
 	}
 	root, err := dshASARManifest(asar)
-	if err != nil || root["name"] != "@deepseek-ai/dsh-desktop" || root["version"] != "0.2.1-rc.2" {
+	if err != nil || root["name"] != "@deepseek-ai/dsh-desktop" || !contracts.DSHDesktopAccountVersionSupported(root["version"]) {
 		return "", false
 	}
 	for _, name := range []string{"dsh-llm-deepseek-account", "dsh-deepseek-account-platform", "dsh-desktop-host", "dsh-app-boot"} {

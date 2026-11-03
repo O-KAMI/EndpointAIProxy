@@ -55,7 +55,7 @@ for file in "${files[@]:0:20}"; do
     [[ "$line_number" =~ '^[0-9]{1,6}$' ]] || line_number=0
     member=$(print -rn -- "$line" | /usr/bin/plutil -extract member raw -o - - 2>/dev/null || true)
     case "$member" in
-      none|sf_open_log|sf_preflight|sf_acquire|sf_snapshot|sf_stop|sf_load_session|sf_validate_credentials|sf_safe_path|sf_write_config|sf_start|sf_ready|mkdir|chown|chmod) ;;
+      none|sf_open_log|sf_preflight|sf_acquire|sf_snapshot|sf_stop|sf_load_session|sf_validate_credentials|sf_resolve_credentials|sf_stage_credentials|sf_session_credentials|sf_safe_path|sf_write_config|sf_start|sf_ready|mkdir|chown|chmod) ;;
       *) member=unknown ;;
     esac
     /usr/bin/printf '{"timeUtc":"%s","stage":"%s","outcome":"%s","exitCode":%d,"errorType":"%s","lineNumber":%d,"member":"%s"}\n' "$stamp" "$stage_value" "$outcome" "$code" "$error_type" "$line_number" "$member" >> "$output"

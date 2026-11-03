@@ -15,8 +15,8 @@ def config(tmp_path):
     c.TRANSPORT_KEY_TEXT = base64.b64encode(bytes(range(32))).decode()
     c.MYSQL_HOST = "127.0.0.1"
     c.MYSQL_PORT = int(os.environ.get("ENDPOINTAI_TEST_MYSQL_PORT", "13306"))
-    c.MYSQL_USER = "root"
-    c.MYSQL_PASSWORD = ""
+    c.MYSQL_USER = os.environ.get("ENDPOINTAI_TEST_MYSQL_USER", "root")
+    c.MYSQL_PASSWORD = os.environ.get("ENDPOINTAI_TEST_MYSQL_PASSWORD", "")
     c.MYSQL_DATABASE = "eai_test_" + uuid4().hex
     c.LOG_DIR = tmp_path / "logs"
     c.DATA_ROOT = tmp_path / "data"

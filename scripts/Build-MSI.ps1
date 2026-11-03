@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
   [string]$CredentialsFile,
-  [ValidatePattern('^\d+\.\d+\.\d+$')][string]$ProductVersion = '0.2.3',
+  [ValidatePattern('^\d+\.\d+\.\d+$')][string]$ProductVersion = '0.2.6',
   [Parameter(Mandatory=$true)][string]$GatewayOrigin,
   [switch]$EnableDSH,
   [string]$OutputDirectory,
@@ -38,6 +38,14 @@ try {
   $sourceCommit=(& git -C $root rev-parse HEAD | Out-String).Trim()
   if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[a-f0-9]{40}$') { throw 'Cannot record the build source commit.' }
   $sourceDirty=-not [string]::IsNullOrWhiteSpace((& git -C $root status --porcelain | Out-String))
+  $sourceFiles=@()
+  $inputs=@(& git -C $root ls-files --cached --others --exclude-standard -- go-client scripts installer/Sf.EndpointAI.Go.Setup installer/Sf.EndpointAI.Setup global.json Directory.Build.props Directory.Packages.props Build-MSI.cmd Upgrade-Client.cmd Install-Silent.cmd Detect-Installed.cmd | Sort-Object -Unique)
+  if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate build source inputs.' }
+  foreach ($relative in $inputs) {
+    if ($relative -match '(\.go|\.mod|\.sum|\.ps1|\.wxs|\.wixproj|\.cmd|\.props|global\.json)$') {
+      $sourceFiles+=@{path=$relative;sha256=(Get-Sha256 (Join-Path $root $relative))}
+    }
+  }
   if ($SigningCertificateThumbprint) {
     $certificate = Get-Item -LiteralPath ("Cert:\CurrentUser\My\" + $SigningCertificateThumbprint) -ErrorAction SilentlyContinue
     if ($null -eq $certificate -or -not $certificate.HasPrivateKey) { throw 'Signing certificate with private key is required in CurrentUser\My.' }
@@ -61,7 +69,7 @@ exit 1603
   Set-Location -LiteralPath (Join-Path $root 'go-client')
   $moduleMode = if (Test-Path -LiteralPath 'vendor/modules.txt') { '-mod=vendor' } else { '-mod=readonly' }
   $stage = 'go-tests'
-  Invoke-CheckedNative $hostTools.Go @('test',$moduleMode,'./...')
+  Invoke-CheckedNative $hostTools.Go @('test',$moduleMode,'-p','1','./...')
   Invoke-CheckedNative $hostTools.Go @('vet',$moduleMode,'./...')
   $stage = 'go-payload'
   Invoke-CheckedNative $hostTools.Go @('build',$moduleMode,'-trimpath','-ldflags',("-s -w -X main.version=" + $ProductVersion),'-o',(Join-Path $publish 'Sf.EndpointAI.Client.Service.exe'),'./cmd/endpointai')
@@ -72,7 +80,7 @@ exit 1603
     $buildInfo = (& $hostTools.Go version -m $path | Out-String)
     if ($LASTEXITCODE -ne 0 -or $buildInfo -notmatch 'endpointai/client/cmd/(endpointai|installer-actions)') { throw 'The service and helper must contain Go build metadata for this module.' }
   }
-  $signatureStatus = 'unsigned-test-candidate'
+  $signatureStatus = 'unsigned'
   if ($SigningCertificateThumbprint) {
     $stage = 'sign-payload'
     foreach ($exe in @((Join-Path $publish 'Sf.EndpointAI.Client.Service.exe'),(Join-Path $actions 'Sf.EndpointAI.InstallerActions.exe'))) {
@@ -101,8 +109,8 @@ exit 1603
   Copy-Item -LiteralPath $msi -Destination $target
   $upgradeScripts=Join-Path $OutputDirectory 'scripts'
   Protect-BuildPath $upgradeScripts
-  Copy-Item -LiteralPath "$root/Upgrade-Client.cmd" -Destination $OutputDirectory
-  foreach($script in @('Upgrade-Client.ps1','Windows-GoSupport.ps1','Installer-BuildSupport.ps1','Test-IndependentTerminal.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination $upgradeScripts}
+  foreach($entry in @('Upgrade-Client.cmd','Install-Silent.cmd','Detect-Installed.cmd')) { Copy-Item -LiteralPath (Join-Path $root $entry) -Destination $OutputDirectory }
+  foreach($script in @('Upgrade-Client.ps1','Windows-GoSupport.ps1','Installer-BuildSupport.ps1','Acceptance-Support.ps1','Test-IndependentTerminal.ps1','Install-Silent.ps1','Test-DeploymentStatus.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination $upgradeScripts}
   $migrationBinary=Join-Path $OutputDirectory 'MigrationHelper.exe'
   Copy-Item -LiteralPath (Join-Path $actions 'Sf.EndpointAI.InstallerActions.exe') -Destination $migrationBinary
   [IO.File]::WriteAllText(($migrationBinary+'.sha256'),((Get-Sha256 $migrationBinary)+'  MigrationHelper.exe'+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
@@ -112,7 +120,18 @@ exit 1603
   Copy-Item -LiteralPath "$PSScriptRoot/Collect-InstallerLogs.ps1" -Destination $OutputDirectory -Force
   Copy-Item -LiteralPath "$root/docs/WINDOWS-GO-DELIVERY.md" -Destination $OutputDirectory -Force
   Copy-Item -LiteralPath "$root/docs/INDEPENDENT-TERMINAL-ACCEPTANCE.md" -Destination $OutputDirectory -Force
-  Write-BuildJson (Join-Path $OutputDirectory 'manifest.json') @{ sourceCommit=$sourceCommit; sourceDirty=$sourceDirty; gatewayOrigin=$GatewayOrigin; enableDSH=$EnableDSH.IsPresent; productVersion=$ProductVersion; implementation='go'; architecture='windows-amd64'; signature=$signatureStatus; builtUtc=[DateTime]::UtcNow.ToString('o'); toolchain=$hostTools; moduleMode=$moduleMode; goModSha256=(Get-Sha256 "$root/go-client/go.mod"); goSumSha256=(Get-Sha256 "$root/go-client/go.sum"); payload=$payload; msi=@{ name=$name; sha256=$digest; bytes=(Get-Item -LiteralPath $target).Length }; installCommand="msiexec.exe /i `"$name`" /qn /norestart"; installed=$false; nativeLifecycleAcceptance='pending'; soakHoursRequired=4 }
+  $acceptance = "# Windows $ProductVersion candidate: acceptance pending`n`n" +
+    "MSI: $name`n`nSHA-256: $digest`n`nSignature: $signatureStatus`n`n" +
+    "Build and static validation do not establish native installation, upgrade, rollback, IOA or platform acceptance. " +
+    "Verify the MSI digest before testing and record acceptance against this exact package.`n"
+  [IO.File]::WriteAllText((Join-Path $OutputDirectory 'ACCEPTANCE-PENDING.md'), $acceptance, [Text.UTF8Encoding]::new($false))
+  foreach ($input in $sourceFiles) { if ((Get-Sha256 (Join-Path $root $input.path)) -ne $input.sha256) { throw 'Build source changed; candidate must not be promoted.' } }
+  Write-BuildJson (Join-Path $OutputDirectory 'source-inputs.json') @{sourceCommit=$sourceCommit;sourceDirty=$sourceDirty;files=$sourceFiles}
+  $deliveryFiles=@()
+  foreach ($file in @(Get-ChildItem -LiteralPath $upgradeScripts -File) + @(Get-ChildItem -LiteralPath $OutputDirectory -File | Where-Object {$_.Extension -in @('.cmd','.md')})) {
+    $deliveryFiles+=@{name=$file.FullName.Substring($OutputDirectory.TrimEnd('\').Length+1).Replace('\','/');sha256=(Get-Sha256 $file.FullName)}
+  }
+  Write-BuildJson (Join-Path $OutputDirectory 'manifest.json') @{ sourceCommit=$sourceCommit; sourceDirty=$sourceDirty; sourceInputsSha256=(Get-Sha256 (Join-Path $OutputDirectory 'source-inputs.json')); deliveryFiles=$deliveryFiles; gatewayOrigin=$GatewayOrigin; enableDSH=$EnableDSH.IsPresent; productVersion=$ProductVersion; implementation='go'; architecture='windows-amd64'; signature=$signatureStatus; builtUtc=[DateTime]::UtcNow.ToString('o'); toolchain=$hostTools; moduleMode=$moduleMode; goModSha256=(Get-Sha256 "$root/go-client/go.mod"); goSumSha256=(Get-Sha256 "$root/go-client/go.sum"); payload=$payload; msi=@{ name=$name; sha256=$digest; bytes=(Get-Item -LiteralPath $target).Length }; installCommand="msiexec.exe /i `"$name`" /qn /norestart"; installed=$false; nativeLifecycleAcceptance='pending'; soakHoursRequired=8 }
   Write-BuildJson $reportPath @{ status='passed'; checks=@('go test','go vet','x64 GUI helper','MSI metadata and transaction sequence','Go-only MSI payload'); signature=$signatureStatus; installationPerformed=$false; nativeLifecycleAcceptance='pending'; ioaAcceptance='pending' }
   Write-Host "Candidate MSI: $target"
   Write-Host "Signature: $signatureStatus. No installation was performed."

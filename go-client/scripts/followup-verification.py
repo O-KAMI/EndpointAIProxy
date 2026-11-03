@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the four-hour functional gate after the exclusive-port performance suite."""
+"""Run the eight-hour functional gate after the exclusive-port performance suite."""
 import argparse,hashlib,json,subprocess,time
 from pathlib import Path
 p=argparse.ArgumentParser(description=__doc__)
@@ -21,12 +21,12 @@ try:
                 report['performance_gate']=performance.get('dotnet_5ms_gate');break
         if time.monotonic()>deadline:raise RuntimeError('PERFORMANCE_WAIT_EXPIRED')
         time.sleep(30)
-    report['phase']='four-hour-soak';save()
-    cmd=['python3',str(Path(__file__).with_name('soak.py')),'--go',str(a.go),'--control-helper',str(a.control_helper),'--dsh-runtime',str(a.dsh_runtime),'--hours','4','--sample-seconds','10','--restarts','3','--output',str(a.soak_output)]
+    report['phase']='eight-hour-soak';save()
+    cmd=['python3',str(Path(__file__).with_name('soak.py')),'--go',str(a.go),'--control-helper',str(a.control_helper),'--dsh-runtime',str(a.dsh_runtime),'--hours','8','--sample-seconds','10','--restarts','3','--output',str(a.soak_output)]
     result=subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     if result.returncode:raise RuntimeError('SOAK_EXECUTION_FAILED')
     soak=json.loads(a.soak_output.read_text())
-    if not soak.get('duration_4h_completed') or soak.get('status')!='passed' or soak.get('binary_sha256')!=report['binary_sha256']:raise RuntimeError('SOAK_NOT_PASSED')
+    if not soak.get('duration_8h_completed') or soak.get('status')!='passed' or soak.get('binary_sha256')!=report['binary_sha256']:raise RuntimeError('SOAK_NOT_PASSED')
     report.update(status='completed',phase='finished',functional_soak='passed',release_acceptance='pending native Windows/Mac and independent observability budget; see performance gate')
 except Exception as e:report.update(status='failed',failure_code=str(e) if str(e).isupper() else type(e).__name__);raise
 finally:save()

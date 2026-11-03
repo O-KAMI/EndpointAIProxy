@@ -13,7 +13,7 @@ main() {
   print -r -- "$$" > "$SF_LOCK/script-pid" || return 1
   SF_STAGE=postinstall
   sf_log begin || return 1
-  sf_step sf_validate_credentials "$SCRIPT_DIR/client-credentials.json" || return 1
+  sf_step sf_session_credentials "$SCRIPT_DIR" || return 1
   local dir
   for dir in "$SF_DATA/state" "$SF_DATA/captures" "$SF_DATA/logs/service" \
     "$SF_DATA/config-backups" "$SF_DATA/.net"; do

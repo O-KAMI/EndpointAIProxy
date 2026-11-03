@@ -36,6 +36,10 @@ def token_required(kind):
     def decorator(func):
         @functools.wraps(func)
         def wrapped(*args, **kwargs):
+            if kind == "admin" and cfg().ADMIN_AUTH_MODE == "local":
+                from .local_admin import authorize
+                denied = authorize()
+                return denied if denied is not None else func(*args, **kwargs)
             expected = cfg().ADMIN_TOKEN if kind == "admin" else cfg().CLIENT_TOKEN
             token = bearer()
             if not token or not safe_compare(token, expected):
@@ -51,6 +55,7 @@ def require_https():
 
 
 def authenticate_device(device):
+    bound = request.environ.get("endpointai.transport_device")
     token = bearer()
-    if not token or not store().authenticate(device, token):
+    if (bound is not None and bound != str(device)) or not token or not store().authenticate(device, token):
         raise ApiProblem("UNAUTHORIZED", "Unauthorized", 401)

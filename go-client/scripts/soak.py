@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Isolated four-hour signed-client gate; shorter runs are smoke tests only."""
+"""Isolated eight-hour client gate; shorter runs are smoke tests only."""
 import argparse
 import base64
 import concurrent.futures
+from datetime import datetime, timezone
 import gzip
 import http.server
 import json
@@ -31,6 +32,49 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
+def check_sample_continuity(points, sample_seconds):
+    """Reject long sampling gaps and wall-clock discontinuities, including the end gap."""
+    limit = max(3 * sample_seconds, sample_seconds + 60)
+    max_gap = 0.0
+    for previous, current in zip(points, points[1:]):
+        monotonic_gap = current[0] - previous[0]
+        wall_gap = current[1] - previous[1]
+        max_gap = max(max_gap, monotonic_gap, wall_gap)
+        if monotonic_gap < 0 or wall_gap < 0 or abs(monotonic_gap - wall_gap) > 5:
+            raise RuntimeError("Sampling clock changed or the machine suspended; rerun the soak.")
+        if max(monotonic_gap, wall_gap) > limit:
+            raise RuntimeError(f"Sampling gap exceeded {limit:.1f} seconds; rerun the soak.")
+    return {"max_gap_seconds": max_gap, "allowed_gap_seconds": limit}
+
+
+def control_event_queue_sample(status):
+    value = status.get('controlEventQueue')
+    if not isinstance(value, dict):
+        return None
+    memory, persisted, capacity = (value.get(k) for k in ('memoryDepth', 'persistedDepth', 'capacity'))
+    mode, loaded = value.get('persistedReadStatus'), value.get('memoryBaselineLoaded')
+    if (type(capacity) is not int or capacity != 1000 or type(memory) is not int
+            or not 0 <= memory <= capacity * 2 or type(loaded) is not bool
+            or mode not in ('available', 'unavailable')):
+        return None
+    if ((mode == 'available' and (type(persisted) is not int or not 0 <= persisted <= capacity))
+            or (mode == 'unavailable' and persisted is not None)):
+        return None
+    return dict(memoryDepth=memory, persistedDepth=persisted, capacity=capacity,
+                memoryBaselineLoaded=loaded, persistedReadStatus=mode)
+
+
+def control_sync_fresh(status, now=None):
+    try:
+        synced = datetime.fromisoformat(status.get("lastControlSyncAtUtc", "").replace("Z", "+00:00"))
+        if synced.tzinfo is None:
+            return False
+        age = ((now or datetime.now(timezone.utc)) - synced).total_seconds()
+        return -60 <= age <= 600 and not status.get("lastControlErrorCode")
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def terminate(proc, log):
     if proc is not None and proc.poll() is None:
         proc.terminate()
@@ -41,6 +85,26 @@ def terminate(proc, log):
             proc.wait(timeout=5)
     if log is not None:
         log.close()
+
+
+def protect_fixture_root(root):
+    """On Windows, create synthetic fixtures only under a private DACL."""
+    if os.name != "nt":
+        return
+    env = dict(os.environ, ENDPOINTAI_SOAK_FIXTURE_ROOT=str(root))
+    command = ("$ErrorActionPreference='Stop';"
+               "$d=[IO.DirectoryInfo]::new($env:ENDPOINTAI_SOAK_FIXTURE_ROOT);"
+               "$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+               "if($sid -notmatch '^S-1-5-21-(\\d+-){3}\\d+$'){throw 'Invalid owner'};"
+               "$a=[Security.AccessControl.DirectorySecurity]::new();"
+               "$a.SetAccessRuleProtection($true,$false);"
+               "foreach($s in @($sid,'S-1-5-18','S-1-5-32-544')){"
+               "$a.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new("
+               "[Security.Principal.SecurityIdentifier]::new($s),'FullControl',"
+               "'ContainerInherit,ObjectInherit','None','Allow'))};$d.SetAccessControl($a)")
+    subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                   env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                   timeout=15, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
 
 def fixtures(root, upstream, dsh_runtime=None):
@@ -101,16 +165,17 @@ def routes(profile):
 def start_client(candidate, root, env):
     ensure_free()
     log = (root / "process.log").open("ab")
-    proc = subprocess.Popen([str(candidate)], env=env, stdout=log, stderr=log)
+    proc = subprocess.Popen([str(candidate)], env=env, stdout=log, stderr=log,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     status = {}
     try:
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                raise RuntimeError("Signed candidate exited before readiness.")
+                raise RuntimeError("Candidate exited before readiness.")
             try:
                 status = health()
-                if status.get("status") == "ok" and status.get("policyVersion") == 2 and status.get("lastControlSyncAtUtc") and not status.get("lastControlErrorCode"):
+                if status.get("status") == "ok" and status.get("policyVersion") == 2 and control_sync_fresh(status):
                     routes(root / "profile")
                     return proc, log, status
             except (urllib.error.URLError, OSError, ValueError, RuntimeError):
@@ -131,7 +196,8 @@ def start_control(helper, root, gateway_origin):
         stream.write(key)
     ready = root / "control-ready.json"
     log = (root / "control.log").open("wb")
-    proc = subprocess.Popen([str(helper), "--key-file", str(path), "--ready-file", str(ready), "--gateway-origin", gateway_origin], stdout=log, stderr=log)
+    proc = subprocess.Popen([str(helper), "--key-file", str(path), "--ready-file", str(ready), "--gateway-origin", gateway_origin],
+                            stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     try:
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -230,10 +296,10 @@ def trend(samples, field):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--go", required=True, type=Path, help="Signed native client executable inside its development app")
+    ap.add_argument("--go", required=True, type=Path, help="Native client executable under test")
     ap.add_argument("--control-helper", required=True, type=Path, help="Built cmd/soak-control helper; never a deployment payload")
-    ap.add_argument("--dsh-runtime", type=Path, help="Installed fixed DSH npm fixture; adds a DSH route to the same four-hour gate")
-    ap.add_argument("--hours", type=float, default=4)
+    ap.add_argument("--dsh-runtime", type=Path, help="Installed fixed DSH npm fixture; adds a DSH route to the same eight-hour gate")
+    ap.add_argument("--hours", type=float, default=8)
     ap.add_argument("--sample-seconds", type=float, default=10)
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--requests-per-round", type=int, default=16)
@@ -283,8 +349,8 @@ def main():
     mock = Mock(("127.0.0.1", 0), CheckedUpstream)
     threading.Thread(target=mock.serve_forever, daemon=True).start()
     upstream = f"http://127.0.0.1:{mock.server_port}/v1"
-    report = {"kind": "isolated-soak" if args.hours >= 4 else "isolated-smoke", "requested_hours": args.hours,
-              "status": "running", "duration_4h_completed": False, "elapsed_seconds": 0, "samples": 0, "restarts": 0,
+    report = {"kind": "isolated-soak" if args.hours >= 8 else "isolated-smoke", "requested_hours": args.hours,
+              "status": "running", "duration_4h_completed": False, "duration_8h_completed": False, "elapsed_seconds": 0, "samples": 0, "restarts": 0,
               "requested_restarts": args.restarts, "concurrency": args.concurrency, "requests_per_round": args.requests_per_round,
               "native_installation_ioa_validation": "not performed", "failure": None,
               "binary_sha256": hashlib.sha256(args.go.read_bytes()).hexdigest(),
@@ -294,6 +360,8 @@ def main():
     proc = log = helper = helper_log = None
     rows, timings = [], {False: [], True: []}
     began = None
+    sample_points = []
+    workload_elapsed = 0.0
     cpu_completed = 0.0
     request_count = 0
     stats = {}
@@ -301,6 +369,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="endpointai-soak-") as temporary:
         root = Path(temporary).resolve()
         try:
+            protect_fixture_root(root)
             original = "https://synthetic.example.invalid/v1"
             profile, expired, fresh = fixtures(root, original, args.dsh_runtime)
             helper, helper_log, origin, key = start_control(args.control_helper, root, f"http://127.0.0.1:{mock.server_port}")
@@ -324,15 +393,16 @@ def main():
                 raise RuntimeError("Expired synthetic capture/log evidence was not cleaned.")
             report["retention_expired_capture_and_log_removed"] = True
             began, next_progress = time.monotonic(), time.monotonic()
+            sample_points.append((began, time.time()))
             with timeline_path.open("x", encoding="utf-8") as timeline, concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
                 while time.monotonic() - began < args.hours * 3600:
                     round_began = time.monotonic()
                     status = health()
-                    if proc.poll() is not None or helper.poll() is not None or status.get("status") != "ok" or status.get("deviceId") != identity or status.get("auditState") != "Healthy" or status.get("lastControlErrorCode"):
+                    if proc.poll() is not None or helper.poll() is not None or status.get("status") != "ok" or status.get("deviceId") != identity or status.get("auditState") != "Healthy" or not control_sync_fresh(status):
                         report["failure_evidence"] = {
                             "client_exit_code": proc.poll(), "helper_exit_code": helper.poll(),
                             "identity_unchanged": status.get("deviceId") == identity,
-                            "health": {name: status.get(name) for name in ("status", "auditState", "policyVersion", "lastControlErrorCode")},
+                            "health": {name: status.get(name) for name in ("status", "auditState", "policyVersion", "lastControlErrorCode", "lastControlSyncAtUtc")},
                         }
                         raise RuntimeError("Client/helper health, audit, control sync or persistent identity changed unexpectedly.")
                     bases = routes(profile)
@@ -348,10 +418,14 @@ def main():
                     total_cpu = cpu_completed + cpu
                     row = {"elapsed_seconds": elapsed, "rss_kib": rss, "cpu_seconds_total": total_cpu, "cpu_percent": None,
                            "disk_bytes": disk["bytes"], "disk_files": disk["files"], "compressed_captures": disk["compressed_captures"],
-                           "audit_state": status.get("auditState"), "restart_index": report["restarts"], "completed_requests": request_count}
+                           "audit_state": status.get("auditState"), "last_control_sync_at_utc": status.get("lastControlSyncAtUtc"),
+                           "control_event_queue": control_event_queue_sample(status),
+                           "restart_index": report["restarts"], "completed_requests": request_count}
                     if previous:
                         row["cpu_percent"] = max(0, total_cpu - previous["cpu_seconds_total"]) / max(0.001, elapsed - previous["elapsed_seconds"]) * 100
                     rows.append(row)
+                    sample_points.append((time.monotonic(), time.time()))
+                    report["sampling_continuity"] = check_sample_continuity(sample_points[-2:], args.sample_seconds)
                     timeline.write(json.dumps(row) + "\n")
                     timeline.flush()
                     report.update(elapsed_seconds=elapsed, samples=len(rows), completed_requests=request_count, latest=row)
@@ -372,6 +446,9 @@ def main():
                     pause = min(args.sample_seconds - (time.monotonic() - round_began), args.hours * 3600 - (time.monotonic() - began))
                     if pause > 0:
                         time.sleep(pause)
+            workload_elapsed = time.monotonic() - began
+            sample_points.append((time.monotonic(), time.time()))
+            report["sampling_continuity"] = check_sample_continuity(sample_points, args.sample_seconds)
             stop(proc, log)
             proc = log = None
             stats = control_stats(origin)
@@ -432,12 +509,13 @@ def main():
             if cleanup_failures:
                 failure = failure or ", ".join(cleanup_failures)
     elapsed = time.monotonic() - began if began else 0
-    report.update(elapsed_seconds=elapsed, failure=failure, status="failed" if failure else "passed",
-                  duration_4h_completed=elapsed >= 4 * 3600 and failure is None,
-                  completed_at_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), all_children_cleaned_up=True)
+    report.update(elapsed_seconds=elapsed, workload_elapsed_seconds=workload_elapsed, failure=failure, status="failed" if failure else "passed",
+                  duration_4h_completed=workload_elapsed >= 4 * 3600 and failure is None,
+                  duration_8h_completed=workload_elapsed >= 8 * 3600 and failure is None,
+                  completed_at_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), all_children_cleaned_up=not cleanup_failures)
     write_json(args.output, report)
     write_json(args.progress, report)
-    print(json.dumps({"report": str(args.output), "status": report["status"], "duration_4h_completed": report["duration_4h_completed"]}))
+    print(json.dumps({"report": str(args.output), "status": report["status"], "duration_8h_completed": report["duration_8h_completed"]}))
     if failure:
         raise SystemExit(1)
 

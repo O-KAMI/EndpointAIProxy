@@ -2,6 +2,7 @@
 import ipaddress
 import re
 import socket
+import idna
 from urllib.parse import urlsplit, urlunsplit, quote
 from uuid import UUID, uuid4
 from .models import PolicyUpdateRequest, RouteMode
@@ -70,6 +71,80 @@ def normalize_allowlist(values):
     return result
 
 
+def normalize_domain(value):
+    if not isinstance(value, str):
+        raise ValueError("A domain must be a string.")
+    host = value.strip().lower().removesuffix(".")
+    try:
+        return str(ipaddress.ip_address(host.strip("[]")))
+    except ValueError:
+        pass
+    try:
+        host = idna.encode(host, uts46=True).decode("ascii")
+    except (idna.IDNAError, UnicodeError) as exc:
+        raise ValueError("Enter a hostname or IP without protocol, port, path or wildcard.") from exc
+    if len(host) > 253 or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                                 for label in host.split(".")):
+        raise ValueError("Invalid domain.")
+    return host
+
+
+def normalize_domains(values):
+    if len(values) > 256:
+        raise ValueError("At most 256 domains are allowed.")
+    return list(dict.fromkeys(normalize_domain(value) for value in values))
+
+
+def domain_matches(host, domain):
+    if host == domain:
+        return True
+    for value in (host, domain):
+        try:
+            ipaddress.ip_address(value)
+            return False
+        except ValueError:
+            pass
+    return host.endswith("." + domain)
+
+
+def matching_domain(target, domains):
+    try:
+        host = normalize_domain(urlsplit(target or "").hostname or "")
+    except ValueError:
+        return None
+    matches = [domain for domain in domains if domain_matches(host, domain)]
+    return max(matches, key=len, default=None)
+
+
+def domain_policy(policy, *, overrides=False):
+    """Idempotent JSON upgrade; keep the exact URL list for schema-1 clients."""
+    result = dict(policy)
+    if result.get("allowlistedDomains") is None and (not overrides or "allowlistedBaseUrls" in result):
+        urls = result.get("allowlistedBaseUrls") or []
+        result["allowlistedDomains"] = normalize_domains([urlsplit(url).hostname for url in urls])
+        result["allowlistMigration"] = [dict(baseUrl=url, domain=normalize_domain(urlsplit(url).hostname)) for url in urls]
+    if not overrides:
+        if result.get("routingRules") is None:
+            result["routingRules"] = []
+    return result
+
+
+def normalize_routing_rules(rules):
+    if len(rules) > 256:
+        raise ValueError("At most 256 routing rules are allowed.")
+    result, seen = [], set()
+    for rule in rules:
+        item = wire(rule) if not isinstance(rule, dict) else dict(rule)
+        item["domain"] = normalize_domain(item["domain"])
+        if item["domain"] in seen:
+            raise ValueError("Routing domains must be unique.")
+        seen.add(item["domain"])
+        if not item.get("gatewayOrigin"):
+            item["gatewayOrigin"] = None
+        result.append(item)
+    return result
+
+
 def validate_policy(update):
     if (update.expectedVersion < 1 or update.expectedVersion >= 2**63 - 1
             or not 15 <= update.pollIntervalSeconds <= 3600
@@ -80,17 +155,31 @@ def validate_policy(update):
             normalize_allowlist(update.allowlistedBaseUrls)
         except ValueError as exc:
             fail("POLICY_ALLOWLIST_INVALID", str(exc))
-    if update.routeMode != RouteMode.FixedGateway:
-        return
     try:
-        uri = urlsplit(update.gatewayOrigin or "")
-        valid = (uri.scheme.lower() == "https" or (update.allowInsecureGateway and uri.scheme.lower() == "http"))
+        if update.allowlistedDomains is not None:
+            normalize_domains(update.allowlistedDomains)
+        rules = normalize_routing_rules(update.routingRules or [])
+    except ValueError as exc:
+        fail("POLICY_RULES_INVALID", str(exc))
+    if update.routeMode == RouteMode.FixedGateway:
+        validate_gateway(update.gatewayOrigin, update.allowInsecureGateway)
+    for rule in rules:
+        if rule["routeMode"] == RouteMode.FixedGateway:
+            validate_gateway(rule["gatewayOrigin"] or update.gatewayOrigin, update.allowInsecureGateway)
+        elif rule["gatewayOrigin"]:
+            fail("POLICY_RULES_INVALID", "Original-target rules cannot specify a gateway.")
+
+
+def validate_gateway(origin, allow_http):
+    try:
+        uri = urlsplit(origin or "")
+        valid = (uri.scheme.lower() == "https" or (allow_http and uri.scheme.lower() == "http"))
         valid = valid and bool(uri.hostname) and uri.username is None and uri.password is None
         valid = valid and uri.path in ("", "/") and not uri.query and not uri.fragment
         _ = uri.port
         # The same host grammar as the allowlist; gateway must also have no path.
         if valid:
-            normalize_base_url(update.gatewayOrigin)
+            normalize_base_url(origin)
     except ValueError:
         valid = False
     if not valid:

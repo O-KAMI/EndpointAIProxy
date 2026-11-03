@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"endpointai/client/internal/observability"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -44,6 +45,9 @@ func (s *Store) maintenanceFailure(scope, stage string, err error) {
 	}
 }
 func (s *Store) captureFailure(stage string, err error) {
+	if errors.Is(err, errCaptureCapacity) {
+		stage = "capture_capacity"
+	}
 	d := observability.Classify(err)
 	s.degraded.Store(true)
 	s.telemetryMu.Lock()

@@ -65,3 +65,11 @@ def sign_policy(body, key):
 def sign_command(payload, key):
     derived = hmac.new(key, b"sf-endpoint-ai-command-v1", hashlib.sha256).digest()
     return sign_policy(dumps(payload), derived)
+
+
+def sign_ed25519(body, private_key, purpose):
+    if purpose not in ("policy", "command") or private_key is None:
+        raise ValueError("Invalid signing purpose or key")
+    body = body.encode("utf-8") if isinstance(body, str) else body
+    signature = private_key.sign(("sf-endpointai-" + purpose + "-ed25519-v1\n").encode("ascii") + body)
+    return "ed25519-v1:" + base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")

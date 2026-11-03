@@ -169,7 +169,7 @@ func run(root, output, version string) error {
 	licenseDigest := sha256.Sum256(licenseData)
 	inventory = append(inventory, entry{"THIRD-PARTY-LICENSES.txt", hex.EncodeToString(licenseDigest[:]), int64(len(licenseData))})
 	sort.Slice(inventory, func(i, j int) bool { return inventory[i].Path < inventory[j].Path })
-	manifest, err := json.MarshalIndent(map[string]any{"productVersion": version, "purpose": "Windows Go source handoff; build only by default", "credentialsIncluded": false, "requires": []string{"Windows x64", "Windows PowerShell 5.1", "Go 1.27.x", ".NET SDK 10.0", "first-build NuGet access for WiX 6.0.2"}, "soakHoursRequired": 4, "files": inventory}, "", "  ")
+	manifest, err := json.MarshalIndent(map[string]any{"productVersion": version, "purpose": "Windows Go source handoff; build only by default", "credentialsIncluded": false, "requires": []string{"Windows x64", "Windows PowerShell 5.1", "Go 1.27.x", ".NET SDK 10.0", "first-build NuGet access for WiX 6.0.2"}, "soakHoursRequired": 8, "files": inventory}, "", "  ")
 	if err != nil {
 		return err
 	}

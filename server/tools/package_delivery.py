@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import zipfile
 
-from package_release import ROOT, RELEASE_VERSION, build_release, offline_wheels
+from package_release import ROOT, RELEASE_VERSION, build_release, offline_wheels, require_update_validated
 
 
 def digest(path):
@@ -16,6 +16,7 @@ def digest(path):
 
 
 def package_delivery(destination):
+    require_update_validated()
     wheels = offline_wheels()
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
@@ -24,18 +25,19 @@ def package_delivery(destination):
     folder.mkdir()
     count, payload_hash = build_release(folder / (name + "-update.zip"), update=True)
     for filename in ("update-server-" + RELEASE_VERSION + ".py",
-                     "README-SERVER-UPGRADE-" + RELEASE_VERSION + ".md", "test_update_024.py"):
+                     "README-SERVER-UPGRADE-" + RELEASE_VERSION + ".md",
+                     "update-server-0.1.25.py", "update-server-0.1.24.py", "upgrade-snapshot.py"):
         source = ROOT.parent / "deployment" / filename
         if source.is_symlink():
             raise RuntimeError("Linked deployment input")
         shutil.copyfile(source, folder / filename)
     shutil.copyfile(ROOT / "docs" / ("ACCEPTANCE-" + RELEASE_VERSION + ".md"),
                     folder / ("ACCEPTANCE-" + RELEASE_VERSION + ".md"))
-    manifest = dict(version=RELEASE_VERSION, schemaVersion=2, pythonVersion="3.13.15",
+    manifest = dict(version=RELEASE_VERSION, schemaVersion=5, pythonVersion="3.13.15",
         builtAtUtc=datetime.now(timezone.utc).isoformat(), payloadSha256=payload_hash,
-        sourceAndDependencyFiles=count, databaseMigration=False, realCredentialsIncluded=False,
-        supportedPriorVersions=["0.1.23", "0.1.22", "0.1.21"],
-        offlineDependencies=[dict(path=str(path.relative_to(ROOT)), sha256=digest(path)) for path in wheels])
+        sourceAndDependencyFiles=count, databaseMigration=True, realCredentialsIncluded=False,
+        supportedPriorVersions=["0.1.25"],
+        offlineDependencies=[dict(path=path.relative_to(ROOT).as_posix(), sha256=digest(path)) for path in wheels])
     (folder / "BUILD-MANIFEST.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     entries = sorted(folder.iterdir())
     sums = folder / ("SHA256SUMS-SERVER-" + RELEASE_VERSION + ".txt")

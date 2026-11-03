@@ -5,7 +5,9 @@ param(
   [Parameter(Mandatory=$true)][string]$MsiFile,
   [Parameter(Mandatory=$true)][ValidatePattern('^[a-fA-F0-9]{64}$')][string]$ExpectedMsiSha256,
   [Parameter(Mandatory=$true)][string]$OutputDirectory,
-  [switch]$RequireCleanInstall
+  [switch]$RequireCleanInstall,
+  [string]$TargetUserSid,
+  [string]$CodexHome
 )
 $ErrorActionPreference='Stop'
 $utf8=[Text.UTF8Encoding]::new($false)
@@ -14,6 +16,7 @@ chcp 65001 > $null
 $env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'
 . "$PSScriptRoot/Windows-GoSupport.ps1"
 . "$PSScriptRoot/Installer-BuildSupport.ps1"
+. "$PSScriptRoot/Acceptance-Support.ps1"
 function Read-InstallRemnants {
   $installer=New-Object -ComObject WindowsInstaller.Installer
   try { $products=@($installer.RelatedProducts('{643CFDA1-3A12-4C57-BD65-5F6106CBAB90}')) }
@@ -23,17 +26,41 @@ function Read-InstallRemnants {
 }
 $report=@{ schemaVersion=1; phase=$Phase; status='failed'; msiSha256=$ExpectedMsiSha256.ToLowerInvariant(); atUtc=[DateTime]::UtcNow.ToString('o'); evidence=@{}; releaseAcceptance='pending'; pending=@('gateway request correlation','SSE transport evidence','control command receipts','configuration restoration review') }
 $reportFile=$null
+$originalCodexHome=$env:CODEX_HOME
 try {
   $MsiFile=[IO.Path]::GetFullPath($MsiFile)
   if ((Get-Sha256 $MsiFile) -ne $report.msiSha256) { throw 'MSI digest mismatch.' }
+  $productVersion=Get-MsiProductVersion $MsiFile
   $OutputDirectory=[IO.Path]::GetFullPath($OutputDirectory)
-  Protect-BuildPath $OutputDirectory
+  Assert-AcceptancePath $OutputDirectory
+  $baselinePath=Join-Path $OutputDirectory 'prepared.json'
+  Assert-AcceptancePath $baselinePath
+  $callerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  if ($callerSid -eq 'S-1-5-18' -and -not $TargetUserSid) { throw 'SYSTEM must specify -TargetUserSid.' }
+  if ($Phase -eq 'Prepare') {
+    if (Test-Path -LiteralPath $baselinePath) { throw 'Prepare already recorded; preserve the original baseline.' }
+    $target=Get-AcceptanceTarget $TargetUserSid
+    if ($target.callerSid -ne $target.sid) { throw 'Prepare must run as the target interactive user.' }
+    if (-not $CodexHome) { $CodexHome=if ($env:CODEX_HOME) {$env:CODEX_HOME} else {Join-Path $target.profile '.codex'} }
+    Assert-AcceptancePath $CodexHome
+    $config=Join-Path ([IO.Path]::GetFullPath($CodexHome)) 'config.toml'
+  } else {
+    $baseline=Get-Content -LiteralPath $baselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $TargetUserSid) { $TargetUserSid=$baseline.targetUserSid }
+    $target=Get-AcceptanceTarget $TargetUserSid
+    Assert-AcceptanceBaseline $baseline $target $report.msiSha256 $productVersion
+    $config=$baseline.codexConfigPath
+    if ($CodexHome -and [IO.Path]::GetFullPath($CodexHome) -ne [IO.Path]::GetDirectoryName($config)) { throw 'CodexHome differs from Prepare.' }
+  }
+  if ($Phase -in @('Codex','Paused','Resumed') -and $callerSid -ne $target.sid) { throw 'Run application checks as the target interactive user.' }
+  Protect-AcceptanceDirectory $OutputDirectory $target.sid
   $phaseDirectory=Join-Path $OutputDirectory ($Phase+'-'+[Guid]::NewGuid().ToString('N'))
-  Protect-BuildPath $phaseDirectory
+  Protect-AcceptanceDirectory $phaseDirectory $target.sid
   $reportFile=Join-Path $phaseDirectory 'sanitized-report.json'
   $service=Get-CimInstance Win32_Service -Filter "Name='SfEndpointAIProxy'"
-  $config=Join-Path $env:USERPROFILE '.codex/config.toml'
-  if ($env:CODEX_HOME) { $config=Join-Path $env:CODEX_HOME 'config.toml' }
+  $report.evidence.productVersion=$productVersion
+  $report.evidence.executionIdentity=if ($callerSid -eq 'S-1-5-18') {'SYSTEM'} else {'interactive'}
+  $report.evidence.targetUserBound=$true
   if (Test-Path -LiteralPath $config -PathType Leaf) { $report.evidence.codexConfigSha256=Get-Sha256 $config }
   $boot=(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')
   $report.evidence.bootUtc=$boot
@@ -42,11 +69,9 @@ try {
     if (Test-Path -LiteralPath $config -PathType Leaf) { Copy-Item -LiteralPath $config -Destination (Join-Path $phaseDirectory 'codex-config.private.toml') }
     $remnants=Read-InstallRemnants
     $clean=($null -eq $service -and $remnants.registeredProducts -eq 0 -and -not $remnants.dataPresent)
-    Write-BuildJson (Join-Path $OutputDirectory 'prepared.json') @{ msiSha256=$report.msiSha256; bootUtc=$boot; servicePresent=($null -ne $service); cleanBaseline=$clean; codexConfigSha256=$report.evidence.codexConfigSha256 }
+    Write-BuildJson $baselinePath @{ schemaVersion=2; msiSha256=$report.msiSha256; productVersion=$productVersion; targetUserSid=$target.sid; targetProfile=$target.profile; codexConfigPath=$config; bootUtc=$boot; servicePresent=($null -ne $service); cleanBaseline=$clean; codexConfigSha256=$report.evidence.codexConfigSha256 }
     $report.evidence.cleanBeforeInstall=$clean
   } else {
-    $baseline=Get-Content -LiteralPath (Join-Path $OutputDirectory 'prepared.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($baseline.msiSha256 -ne $report.msiSha256) { throw 'Baseline belongs to another MSI.' }
     if ($Phase -in @('Install','Uninstall')) {
       $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
       if (-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Use an elevated shell for the explicitly selected MSI action.' }
@@ -83,7 +108,7 @@ try {
       if ($listeners.Count -ne 1 -or $listeners[0].OwningProcess -ne $service.ProcessId -or $listeners[0].LocalAddress -ne '127.0.0.1') { throw 'Service and loopback listener identity mismatch.' }
       $report.evidence.serviceOwnsProxyPort=$true
       $health=Invoke-RestMethod -Uri 'http://127.0.0.1:18080/healthz' -UseBasicParsing -TimeoutSec 10
-      if ($health.status -ne 'ok' -or $health.implementation -ne 'go' -or $health.clientVersion -ne '0.2.3' -or $health.installationPending -eq $true) { throw 'Candidate health mismatch.' }
+      if ($health.status -ne 'ok' -or $health.implementation -ne 'go' -or $health.clientVersion -ne $productVersion -or $health.installationPending -eq $true) { throw 'Candidate health mismatch.' }
       $report.evidence.serviceVersion=$health.clientVersion
       $report.evidence.operationState=$health.operationState
       if ($Phase -eq 'Paused' -and $health.operationState -ne 'Disabled') { throw 'Pause has not been applied.' }
@@ -98,7 +123,8 @@ try {
         foreach ($flag in @('--ephemeral','--sandbox','--json','--skip-git-repo-check')) { if (-not $help.Contains($flag)) { throw 'Codex CLI does not support the required flags.' } }
         $nonce='EndpointAI-'+[Guid]::NewGuid().ToString('N')
         $work=Join-Path $phaseDirectory 'empty-workspace'
-        Protect-BuildPath $work
+        Protect-AcceptanceDirectory $work $target.sid
+        $env:CODEX_HOME=[IO.Path]::GetDirectoryName($config)
         $eventPath=Join-Path $phaseDirectory 'codex-events.private.jsonl'
         $events=[IO.StreamWriter]::new($eventPath,$false,$utf8)
         $completed=$false; $matched=$false; $toolUsed=$false
@@ -126,6 +152,7 @@ try {
   $report.errorType=$_.Exception.GetType().Name
   [Console]::Error.WriteLine('Acceptance phase failed; details and raw output remain in the protected directory.')
 } finally {
+  $env:CODEX_HOME=$originalCodexHome
   if ($reportFile) { Write-BuildJson $reportFile $report }
 }
 if ($report.status -ne 'phase-passed') { exit 1 }

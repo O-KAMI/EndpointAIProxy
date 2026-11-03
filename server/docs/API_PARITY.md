@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | GET `/`、`/console` | `controlserver/console.py`、`templates/console.html` | 跳转及原版管理页面 |
 | GET `/health/live`、`/health/ready` | `routes_health.py` | 存活、数据库和备份状态 |
+
 | GET `/api/v1/policy` | `routes_client.py` | 旧版客户端策略与原始响应签名 |
 | POST `/api/v1/heartbeat` | 同上 | 旧版设备心跳 |
 | POST `/api/v1/events/batch` | 同上 | 旧版事件批量上报 |
@@ -27,6 +28,11 @@
 | GET `/admin/v1/audit` | 同上 | 管理员操作审计 |
 
 另外保留 `/health` 作为存活检查别名。
+
+`/health/live` 只表示进程存活；`/health/ready` 在数据库检查失败时返回 503。
+备份尚未执行、失败或状态不可读时，就绪接口仍返回 200，但响应中的
+`status` 为 `degraded`，`lastError` 指示原因。监控须同时检查 HTTP 状态和
+`status`、`lastError`，不能仅以 HTTP 200 判断备份正常；恢复验证仍需单独执行。
 
 ## 协议、状态和存储
 

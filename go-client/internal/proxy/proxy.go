@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"endpointai/client/internal/contracts"
@@ -49,23 +50,25 @@ type Capture interface {
 }
 
 type Handler struct {
-	Store        RouteStore
-	Policy       func() contracts.Policy
-	Snapshot     func() (contracts.Policy, map[string]struct{})
-	Enabled      func() bool
-	Bypass       func(string) bool
-	DeviceID     func() string
-	UserID       func(string) string
-	GatewayKey   []byte
-	Transport    http.RoundTripper
-	StartCapture func(Record) Capture
-	Observe      func(Record, int, string, time.Duration)
+	Store             RouteStore
+	Policy            func() contracts.Policy
+	Snapshot          func() (contracts.Policy, map[string]struct{})
+	Enabled           func() bool
+	Bypass            func(string) bool
+	DeviceID          func() string
+	UserID            func(string) string
+	GatewayKey        []byte
+	Transport         http.RoundTripper
+	StartCapture      func(Record) Capture
+	Observe           func(Record, int, string, time.Duration)
+	Slots             chan struct{}
+	streamIdleTimeout time.Duration
 }
 
 func ForwardTransport() *http.Transport {
 	return &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		ForceAttemptHTTP2: true, DisableCompression: true, MaxIdleConns: 64, MaxIdleConnsPerHost: 64,
-		IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 15 * time.Second, ExpectContinueTimeout: time.Second}
+		IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 15 * time.Second, ResponseHeaderTimeout: 5 * time.Minute, ExpectContinueTimeout: time.Second}
 }
 
 var defaultForwardTransport = http.RoundTripper(ForwardTransport())
@@ -101,6 +104,7 @@ func ValidRouteID(id string) bool {
 }
 
 func Target(original, suffix, query string, policy contracts.Policy) (*url.URL, error) {
+	policy = protocol.ResolveRoutingPolicy(original, policy)
 	base, err := url.Parse(original)
 	if err != nil || base.Host == "" || base.User != nil || (base.Scheme != "http" && base.Scheme != "https") {
 		return nil, fmt.Errorf("invalid original URL")
@@ -190,6 +194,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reject(404, "ROUTE_NOT_FOUND", "ROUTE_NOT_FOUND", "The local route was not found.", nil)
 		return
 	}
+	if h.Slots != nil {
+		select {
+		case h.Slots <- struct{}{}:
+			defer func() { <-h.Slots }()
+		default:
+			w.Header().Set("Retry-After", "1")
+			reject(http.StatusServiceUnavailable, "PROXY_BUSY", "PROXY_CONCURRENCY_LIMIT", "The local proxy is busy; retry shortly.", nil)
+			return
+		}
+	}
 	route, err := h.Store.FindRoute(r.Context(), id)
 	if err != nil {
 		reject(500, "PROXY_INTERNAL_ERROR", "ROUTE_STATE_READ_FAILED", "Route state could not be read.", err)
@@ -212,7 +226,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bypass := false
-	if allowlist != nil {
+	if policy.SchemaVersion == 2 && allowlist != nil {
+		bypass = protocol.DomainAllowed(route.OriginalBaseURL, allowlist)
+	} else if allowlist != nil {
 		normalized, e := protocol.NormalizeBaseURL(route.OriginalBaseURL)
 		if e == nil {
 			_, bypass = allowlist[normalized]
@@ -224,6 +240,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reject(409, "BASE_URL_ALLOWLIST_BYPASS", "BASE_URL_ALLOWLIST_BYPASS", "The configured BaseURL must bypass the endpoint proxy.", nil)
 		return
 	}
+	policy = protocol.ResolveRoutingPolicy(route.OriginalBaseURL, policy)
 	suffix := ""
 	if len(parts) == 2 {
 		suffix = parts[1]
@@ -252,7 +269,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.StartCapture != nil {
 		capture = h.StartCapture(record)
 	}
-	out := r.Clone(r.Context())
+	upstreamContext, cancelUpstream := context.WithCancel(r.Context())
+	defer cancelUpstream()
+	out := r.Clone(upstreamContext)
 	out.URL = target
 	out.RequestURI = ""
 	out.Host = target.Host
@@ -319,8 +338,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer responseBuffers.Put(pooled)
 	buffer := *pooled
 	first := true
+	idleTimeout := h.streamIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 10 * time.Minute
+	}
 	for {
+		var idle atomic.Bool
+		timer := time.AfterFunc(idleTimeout, func() { idle.Store(true); cancelUpstream() })
 		n, readErr := response.Body.Read(buffer)
+		timer.Stop()
 		if n > 0 {
 			if first {
 				mark(capture, "AgentResponseStartedAtUtc")
@@ -345,6 +371,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				record.Failure = observability.Classify(readErr)
 				record.Failure.Stage = "upstream_stream"
 				outcome = "GATEWAY_STREAM_FAILED"
+				if idle.Load() {
+					outcome = "GATEWAY_STREAM_IDLE_TIMEOUT"
+				}
 				if r.Context().Err() != nil {
 					outcome = "CLIENT_CANCELLED"
 				}

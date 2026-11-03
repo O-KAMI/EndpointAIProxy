@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"endpointai/client/internal/audit"
@@ -20,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -29,16 +31,30 @@ import (
 )
 
 type fakeControl struct {
-	mu                 sync.Mutex
-	server             *httptest.Server
-	key                []byte
-	policy             contracts.Policy
-	counts             map[string]int
-	outer401, inner401 bool
-	badPolicySignature bool
-	receiptConflict    bool
-	command            *contracts.SignedRemoteCommand
-	deviceIDs          []string
+	mu                     sync.Mutex
+	server                 *httptest.Server
+	key                    []byte
+	policy                 contracts.Policy
+	counts                 map[string]int
+	outer401, inner401     bool
+	badPolicySignature     bool
+	receiptConflict        bool
+	command                *contracts.SignedRemoteCommand
+	deviceIDs              []string
+	eventIDs               []string
+	stateless              bool
+	lightweight            bool
+	compact                bool
+	compactOuterReject     bool
+	compactModes           []bool
+	compactUserCounts      []int
+	compactAgentCounts     []int
+	inventoryModes         []bool
+	policyQueries          []string
+	heartbeatModes         []bool
+	heartbeatRuntime       []contracts.DeviceRuntimeState
+	echoEnrollment         bool
+	initialEnrollmentToken string
 }
 
 func testPolicy(version int64) contracts.Policy {
@@ -90,9 +106,22 @@ func (f *fakeControl) serve(w http.ResponseWriter, r *http.Request) {
 		var request contracts.DeviceEnrollmentRequest
 		json.Unmarshal(raw, &request)
 		f.deviceIDs = append(f.deviceIDs, request.DeviceID)
-		response = contracts.DeviceEnrollmentResponse{DeviceID: request.DeviceID, DeviceToken: fmt.Sprintf("synthetic-token-%d", len(f.deviceIDs)), EnrolledAtUTC: time.Now().UTC()}
+		token := fmt.Sprintf("synthetic-token-%d", len(f.deviceIDs))
+		if f.echoEnrollment {
+			if f.initialEnrollmentToken == "" {
+				f.initialEnrollmentToken = request.InitialDeviceToken
+			}
+			if request.InitialDeviceToken == "" || request.InitialDeviceToken != f.initialEnrollmentToken {
+				status = 409
+				response = map[string]string{"error": "conflict"}
+				break
+			}
+			token = f.initialEnrollmentToken
+		}
+		response = contracts.DeviceEnrollmentResponse{DeviceID: request.DeviceID, DeviceToken: token, EnrolledAtUTC: time.Now().UTC()}
 	case strings.HasSuffix(in.Path, "/policy"):
 		kind = "policy"
+		f.policyQueries = append(f.policyQueries, in.Query)
 		if f.inner401 {
 			status = 401
 			f.inner401 = false
@@ -100,13 +129,38 @@ func (f *fakeControl) serve(w http.ResponseWriter, r *http.Request) {
 		} else {
 			response = f.policy
 		}
-	case in.Path == "/api/v2/heartbeat":
+	case in.Path == "/api/v2/heartbeat" || in.Path == "/api/v2/heartbeat/light" || in.Path == "/api/v2/heartbeat/light-compact":
 		kind = "heartbeat"
-		response = contracts.HeartbeatV2Response{ServerTimeUTC: time.Now().UTC(), AcceptedPolicyVersion: f.policy.PolicyVersion, NextHeartbeatSeconds: 60, Command: f.command}
+		var request contracts.HeartbeatV2Request
+		json.Unmarshal(raw, &request)
+		f.heartbeatModes = append(f.heartbeatModes, request.StatelessPolicyVersions)
+		f.heartbeatRuntime = append(f.heartbeatRuntime, request.Runtime)
+		f.inventoryModes = append(f.inventoryModes, request.InventoryUnchanged)
+		f.compactModes = append(f.compactModes, request.CompactInventory)
+		f.compactUserCounts = append(f.compactUserCounts, len(request.Users))
+		f.compactAgentCounts = append(f.compactAgentCounts, len(request.Agents))
+		if in.Path == "/api/v2/heartbeat/light-compact" && !f.compact {
+			if f.compactOuterReject {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			status = 404
+			response = map[string]string{"error": "unknown"}
+			break
+		}
+		if in.Path == "/api/v2/heartbeat/light" && !f.lightweight {
+			status = 404
+			response = map[string]string{"error": "unknown"}
+			break
+		}
+		response = contracts.HeartbeatV2Response{ServerTimeUTC: time.Now().UTC(), AcceptedPolicyVersion: f.policy.PolicyVersion, NextHeartbeatSeconds: 60, Command: f.command, StatelessPolicyVersions: f.stateless, LightweightInventory: f.lightweight, CompactInventory: f.compact}
 	case in.Path == "/api/v2/events/batch":
 		kind = "events"
 		var request contracts.EventBatchRequest
 		json.Unmarshal(raw, &request)
+		for _, event := range request.Events {
+			f.eventIDs = append(f.eventIDs, event.EventID)
+		}
 		response = contracts.EventBatchResponse{Accepted: len(request.Events), Errors: []contracts.ApiError{}}
 	case strings.HasSuffix(in.Path, "/status"):
 		kind = "status"
@@ -231,6 +285,351 @@ func TestAESControlSyncCadenceEventsAndReenrollment(t *testing.T) {
 	f.mu.Unlock()
 	if e := a.Sync(ctx); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestHeartbeatVersionTriggersPolicyRefresh(t *testing.T) {
+	f := newFakeControl(t)
+	a := newControlApp(t, f)
+	ctx := context.Background()
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if remaining := time.Until(a.nextPolicy); remaining < 8*time.Minute || remaining > 11*time.Minute {
+		t.Fatalf("expected low-frequency policy verification, got %s", remaining)
+	}
+	f.mu.Lock()
+	f.policy = testPolicy(3)
+	f.mu.Unlock()
+	a.nextHeartbeat = time.Time{}
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a.Policy().PolicyVersion != 3 || f.count("policy") != 2 {
+		t.Fatal("heartbeat version change did not trigger immediate policy refresh")
+	}
+}
+
+func TestStatelessPolicyCapabilityIsNegotiatedBeforeUse(t *testing.T) {
+	f := newFakeControl(t)
+	f.stateless = true
+	a := newControlApp(t, f)
+	ctx := context.Background()
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a.nextHeartbeat = time.Time{}
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.heartbeatModes) != 2 || f.heartbeatModes[0] || !f.heartbeatModes[1] ||
+		len(f.policyQueries) != 1 || !strings.Contains(f.policyQueries[0], "statelessPolicyVersions=1") {
+		t.Fatal("stateless policy was not negotiated before it was sent")
+	}
+}
+
+func TestLightweightInventoryRequiresAcknowledgedFullSnapshot(t *testing.T) {
+	f := newFakeControl(t)
+	f.lightweight = true
+	f.policy = testPolicy(1)
+	a := newControlApp(t, f)
+	scans := 0
+	a.Profiles = func(context.Context) ([]platform.Profile, error) { scans++; return []platform.Profile{}, nil }
+	ctx := context.Background()
+	for i := 0; i < 4; i++ {
+		if i == 2 {
+			a.RequestReconcile()
+		}
+		if i == 3 {
+			a.nextFullInventory = time.Time{}
+		}
+		a.nextHeartbeat = time.Time{}
+		if err := a.Sync(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if scans != 3 || len(f.inventoryModes) != 4 || f.inventoryModes[0] || !f.inventoryModes[1] || !f.inventoryModes[2] || f.inventoryModes[3] {
+		t.Fatalf("unexpected scans=%d inventory modes=%v", scans, f.inventoryModes)
+	}
+}
+
+func TestInventoryDigestIgnoresObservationTimeButDetectsChange(t *testing.T) {
+	first := contracts.HeartbeatV2Request{Users: []contracts.EndpointUser{{SID: "fixture", AccountName: "one"}},
+		Agents:    []contracts.AgentInventoryItem{{InstanceID: "agent", LastSeenAtUTC: time.Now()}},
+		Endpoints: []contracts.AgentEndpointAsset{{AssetID: "asset", ObservedAtUTC: time.Now()}}}
+	second := first
+	second.Agents = append([]contracts.AgentInventoryItem(nil), first.Agents...)
+	second.Endpoints = append([]contracts.AgentEndpointAsset(nil), first.Endpoints...)
+	second.Users = append([]contracts.EndpointUser(nil), first.Users...)
+	second.Agents[0].LastSeenAtUTC = time.Now().Add(time.Hour)
+	second.Endpoints[0].ObservedAtUTC = time.Now().Add(time.Hour)
+	one, err := inventoryDigest(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := inventoryDigest(second)
+	if err != nil || one != two {
+		t.Fatal("observation time changed the inventory digest")
+	}
+	second.Users[0].AccountName = "two"
+	two, err = inventoryDigest(second)
+	if err != nil || one == two {
+		t.Fatal("inventory change did not alter the digest")
+	}
+}
+
+func TestLightweightHeartbeatFallsBackSafelyAfterServerRollback(t *testing.T) {
+	f := newFakeControl(t)
+	f.lightweight = true
+	f.policy = testPolicy(1)
+	a := newControlApp(t, f)
+	ctx := context.Background()
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.lightweight = false
+	f.mu.Unlock()
+	a.nextHeartbeat = time.Time{}
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.inventoryModes) != 3 || f.inventoryModes[0] || !f.inventoryModes[1] || f.inventoryModes[2] {
+		t.Fatalf("rollback did not retry a full inventory: %v", f.inventoryModes)
+	}
+}
+
+func TestControlRetryDelayIsBounded(t *testing.T) {
+	for failures := 1; failures <= 12; failures++ {
+		for i := 0; i < 100; i++ {
+			if delay := controlRetryDelay(failures); delay < 7500*time.Millisecond || delay > 5*time.Minute {
+				t.Fatalf("failure %d gave retry delay %s", failures, delay)
+			}
+		}
+	}
+	if delay := controlRetryDelayFor(1, &control.HTTPError{Status: http.StatusServiceUnavailable, RetryAfter: time.Minute}); delay != time.Minute {
+		t.Fatalf("authenticated overload retry was ignored: %s", delay)
+	}
+}
+
+func TestPendingEventsSurviveAppRestartAndAreAcknowledged(t *testing.T) {
+	f := newFakeControl(t)
+	a := newControlApp(t, f)
+	a.AddEvent("SYNTHETIC_RESTART", "Synthetic event.")
+	restarted, err := New(context.Background(), a.Options, a.Store, a.Audit, a.Profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restarted.events) != 1 || restarted.events[0].Code != "SYNTHETIC_RESTART" {
+		t.Fatal("pending event was not restored")
+	}
+	if err := restarted.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := a.Store.PendingEvents(context.Background())
+	if err != nil || len(pending) != 0 || len(restarted.events) != 0 {
+		t.Fatalf("acknowledged event remains queued: %d %v", len(pending), err)
+	}
+}
+
+func TestPendingEventOverflowLogsDroppedCount(t *testing.T) {
+	f := newFakeControl(t)
+	a := newControlApp(t, f)
+	db, err := sql.Open("sqlite", filepath.Join(a.Options.DataRoot, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1000)
+		INSERT INTO pending_control_events(event_id,event_json) SELECT printf('fixture-%d',n),'{}' FROM seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.AddEvent("SYNTHETIC_OVERFLOW", "Synthetic event.")
+	a.Audit.CloseLogs()
+	paths, err := filepath.Glob(filepath.Join(a.Audit.Root, "logs", "service", "*.jsonl"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("missing overflow log: %v %v", paths, err)
+	}
+	data, err := os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var record map[string]any
+		if err = json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record["Code"] == "EVENT_QUEUE_OVERFLOW" {
+			found = true
+			if record["droppedCount"] != float64(1) {
+				t.Fatalf("missing overflow count: %v", record)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("overflow event not logged")
+	}
+}
+
+func TestPendingEventsReloadAfterStartupReadFailure(t *testing.T) {
+	f := newFakeControl(t)
+	base := newControlApp(t, f)
+	dir := t.TempDir()
+	protector, err := protect.NewFileKey(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "state.db")
+	store, err := state.Open(path, protector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	event := contracts.EndpointEvent{EventID: uuid.NewString(), OccurredAtUTC: time.Now().UTC(), Severity: contracts.EventSeverityWarning, Type: "client", Code: "BEFORE_READ_FAILURE", Summary: "Persisted before restart."}
+	if _, err = store.EnqueueEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec("UPDATE pending_control_events SET event_json=? WHERE event_id=?", "invalid", event.EventID); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(context.Background(), base.Options, store, base.Audit, base.Profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.eventsLoaded {
+		t.Fatal("invalid queue unexpectedly loaded")
+	}
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec("UPDATE pending_control_events SET event_json=? WHERE event_id=?", string(encoded), event.EventID); err != nil {
+		t.Fatal(err)
+	}
+	a.AddEvent("AFTER_READ_FAILURE", "Recorded while recovery is pending.")
+	if err := a.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := a.Store.PendingEvents(context.Background())
+	if err != nil || len(pending) != 0 || len(a.events) != 0 || f.count("events") != 1 {
+		t.Fatalf("event recovery failed: pending=%d memory=%d requests=%d error=%v", len(pending), len(a.events), f.count("events"), err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.eventIDs) != 2 || f.eventIDs[0] == f.eventIDs[1] {
+		t.Fatalf("expected two distinct recovered events, got %d", len(f.eventIDs))
+	}
+}
+
+func TestPolicyReconcileSchedulesHeartbeatWithoutOverridingBackoff(t *testing.T) {
+	f := newFakeControl(t)
+	a := newControlApp(t, f)
+	ctx := context.Background()
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a.policyReceiptWake.Store(false)
+	a.nextHeartbeat = time.Now().Add(time.Minute)
+	policy := a.Policy()
+	policy.PolicyVersion++
+	if err := a.ApplyPolicy(ctx, policy, "synthetic"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a.nextHeartbeat.After(time.Now().Add(6 * time.Second)) {
+		t.Fatal("policy reconciliation did not schedule a prompt heartbeat")
+	}
+
+	a.heartbeatRetries = 1
+	a.nextHeartbeat = time.Now().Add(time.Minute)
+	backoff := a.nextHeartbeat
+	policy.PolicyVersion++
+	if err := a.ApplyPolicy(ctx, policy, "synthetic"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !a.nextHeartbeat.Equal(backoff) {
+		t.Fatal("policy receipt bypassed heartbeat retry backoff")
+	}
+}
+
+func TestProfileFailureReportsReconcileErrorUsingLastInventory(t *testing.T) {
+	f := newFakeControl(t)
+	f.lightweight = true
+	a := newControlApp(t, f)
+	ctx := context.Background()
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a.Options.AutoAttach = true
+	a.Profiles = func(context.Context) ([]platform.Profile, error) { return nil, errors.New("private fixture detail") }
+	a.RequestReconcile()
+	if err := a.Reconcile(ctx); err == nil {
+		t.Fatal("profile failure was not returned")
+	}
+	a.nextHeartbeat = time.Time{}
+	if err := a.Sync(ctx); err == nil {
+		t.Fatal("inventory failure was hidden")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.heartbeatRuntime) != 2 || len(f.inventoryModes) != 2 || !f.inventoryModes[1] {
+		t.Fatal("lightweight heartbeat did not preserve the acknowledged inventory")
+	}
+	runtime := f.heartbeatRuntime[1]
+	if runtime.LastReconcileResult == nil || *runtime.LastReconcileResult != "failed" ||
+		runtime.LastReconcileErrorCode == nil || *runtime.LastReconcileErrorCode != "PROFILE_DISCOVERY_FAILED" {
+		t.Fatal("profile failure was not reported as a reconciliation failure")
+	}
+}
+
+func TestProfileFailureDoesNotSendLightHeartbeatWithoutNegotiation(t *testing.T) {
+	f := newFakeControl(t)
+	a := newControlApp(t, f)
+	ctx := context.Background()
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	profiles := a.Profiles
+	a.Profiles = func(context.Context) ([]platform.Profile, error) { return nil, errors.New("fixture") }
+	a.nextHeartbeat = time.Time{}
+	if err := a.Sync(ctx); err == nil {
+		t.Fatal("profile failure was hidden")
+	}
+	if f.count("heartbeat") != 1 {
+		t.Fatal("sent an unsupported lightweight heartbeat")
+	}
+	a.Profiles = profiles
+	a.nextHeartbeat = time.Time{}
+	if err := a.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if f.count("heartbeat") != 2 {
+		t.Fatal("full heartbeat did not resume after recovery")
 	}
 }
 func TestRemoteDisableEnableAndReplay(t *testing.T) {
@@ -368,7 +767,7 @@ func TestCommandExpiryDeviceBindingAndRecovery(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatal("expired operation executed")
 	}
-	// A command interrupted after persisting Executing resumes even if its original expiry passes.
+	// An interrupted command past expiry must be left for human verification.
 	now := time.Now().UTC()
 	device := a.DeviceID()
 	pending := state.CommandReceipt{CommandID: uuid.NewString(), DeviceID: &device, Type: contracts.RemoteCommandTypeDisableProxy, Status: contracts.RemoteCommandStatusExecuting, ReceivedAtUTC: now.Add(-time.Hour), IssuedAtUTC: &expired.Payload.IssuedAtUTC, ExpiresAtUTC: &expired.Payload.ExpiresAtUTC}
@@ -379,8 +778,15 @@ func TestCommandExpiryDeviceBindingAndRecovery(t *testing.T) {
 		t.Fatal(e)
 	}
 	r, e = a.Store.LoadCommandReceipt(ctx, pending.CommandID)
-	if e != nil || r.Status != contracts.RemoteCommandStatusSucceeded || a.Enabled() {
-		t.Fatalf("interrupted command did not resume: %+v %v", r, e)
+	if e != nil || r.Status != contracts.RemoteCommandStatusExecuting || !a.Enabled() {
+		t.Fatalf("expired interrupted command was re-executed: %+v %v", r, e)
+	}
+	beforeRedelivery := calls.Load()
+	replayed := expired
+	replayed.Payload.CommandID = pending.CommandID
+	replayed = signPayload(t, a, replayed.Payload)
+	if e = a.ApplyCommand(ctx, replayed, "synthetic"); e != nil || calls.Load() != beforeRedelivery {
+		t.Fatalf("expired interrupted command was re-executed on redelivery: %v", e)
 	}
 }
 
@@ -632,5 +1038,122 @@ func TestInstallationGuardPausesControlAndOperationsUntilCommit(t *testing.T) {
 	}
 	if f.count("enroll") != 1 {
 		t.Fatal("control did not resume after commit")
+	}
+}
+
+func TestDamagedDeviceTransportStateKeepsOfflinePolicyAndBlocksControl(t *testing.T) {
+	f := newFakeControl(t)
+	dir := t.TempDir()
+	protector, err := protect.NewFileKey(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(dir, "state.db"), protector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err = store.SaveDeviceTransport(ctx, "invalid synthetic state"); err != nil {
+		t.Fatal(err)
+	}
+	opts := f.options()
+	a, err := New(ctx, Options{Version: "test", Listen: "127.0.0.1:18080", DataRoot: dir, Policy: testPolicy(1), Control: &opts}, store, audit.New(filepath.Join(dir, "logs")), func(context.Context) ([]platform.Profile, error) { return []platform.Profile{}, nil })
+	if err != nil {
+		t.Fatalf("offline startup failed: %v", err)
+	}
+	if a.Policy().PolicyVersion != 1 {
+		t.Fatal("offline policy lost")
+	}
+	if err = a.Sync(ctx); err == nil {
+		t.Fatal("damaged state allowed control sync")
+	}
+	if f.count("enroll") != 0 {
+		t.Fatal("control request escaped after state failure")
+	}
+}
+
+type dropEnrollmentResponse struct {
+	base    http.RoundTripper
+	dropped bool
+}
+
+func (d *dropEnrollmentResponse) RoundTrip(r *http.Request) (*http.Response, error) {
+	response, err := d.base.RoundTrip(r)
+	if err == nil && !d.dropped && strings.HasSuffix(r.URL.Path, "/api/v2/enroll") {
+		d.dropped = true
+		response.Body.Close()
+		return nil, errors.New("synthetic response loss")
+	}
+	return response, err
+}
+func TestFirstEnrollmentResponseLossSurvivesAppRestart(t *testing.T) {
+	f := newFakeControl(t)
+	f.echoEnrollment = true
+	a := newControlApp(t, f)
+	// Drop the authenticated response after the synthetic server has accepted it.
+	a.Client.HTTP.Transport = &dropEnrollmentResponse{base: a.Client.HTTP.Transport}
+	ctx := context.Background()
+	if _, err := a.enroll(ctx); err == nil {
+		t.Fatal("lost response unexpectedly succeeded")
+	}
+	if f.initialEnrollmentToken == "" {
+		t.Fatal("server did not receive initial token")
+	}
+	if cached, err := a.Store.LoadCredential(ctx); err != nil || cached != nil {
+		t.Fatal("credential committed before response")
+	}
+	opts := f.options()
+	resumed, err := New(ctx, Options{Version: "test", Listen: "127.0.0.1:18080", DataRoot: a.Options.DataRoot, Policy: testPolicy(1), Control: &opts}, a.Store, a.Audit, func(context.Context) ([]platform.Profile, error) { return []platform.Profile{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := resumed.enroll(ctx)
+	if err != nil || credential.Token != f.initialEnrollmentToken {
+		t.Fatalf("retry failed: %v", err)
+	}
+	if value, err := a.Store.LoadPendingEnrollment(ctx); err != nil || value != "" {
+		t.Fatal("pending enrollment was not cleared")
+	}
+	if cached, err := a.Store.LoadCredential(ctx); err != nil || cached == nil || cached.Token != f.initialEnrollmentToken {
+		t.Fatal("credential not committed")
+	}
+}
+
+func TestCompactInventoryNegotiationAndMixedServerFallback(t *testing.T) {
+	for _, outer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("outer-%v", outer), func(t *testing.T) {
+			f := newFakeControl(t)
+			f.lightweight = true
+			f.compact = true
+			f.policy = testPolicy(1)
+			a := newControlApp(t, f)
+			ctx := context.Background()
+			if err := a.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			a.lastFullInventory.Users = []contracts.EndpointUser{{SID: "synthetic", AccountName: "employee"}}
+			a.lastFullInventory.Agents = []contracts.AgentInventoryItem{{InstanceID: uuid.NewString()}}
+			a.nextHeartbeat = time.Time{}
+			if err := a.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+			f.mu.Lock()
+			f.compact = false
+			f.compactOuterReject = outer
+			f.mu.Unlock()
+			a.nextHeartbeat = time.Time{}
+			if err := a.Sync(ctx); err != nil {
+				t.Fatalf("fallback failed: %v", err)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if len(f.compactModes) != 4 || f.compactModes[0] || !f.compactModes[1] || !f.compactModes[2] || f.compactModes[3] {
+				t.Fatalf("unexpected compact modes: %v", f.compactModes)
+			}
+			if f.compactUserCounts[1] != 0 || f.compactAgentCounts[1] != 0 {
+				t.Fatal("compact request leaked cached inventory")
+			}
+		})
 	}
 }

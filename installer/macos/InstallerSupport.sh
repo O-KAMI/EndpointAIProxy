@@ -6,6 +6,7 @@ SF_VERSION=0.1.22
 SF_IMPLEMENTATION=dotnet
 SF_DATA='/Library/Application Support/SF/EndpointAIProxy'
 SF_CONFIG=/private/etc/sf-endpointai-proxy.conf
+SF_EXTERNAL_CREDENTIALS=/private/etc/sf-endpointai-client-credentials.json
 SF_PLIST=/Library/LaunchDaemons/com.sf.endpointai.proxy.plist
 SF_SHARE=/usr/local/share/sf-endpointai-proxy
 SF_BIN="$SF_DATA/bin"
@@ -116,20 +117,74 @@ sf_validate_credentials() {
   [[ -f "$credentials" && ! -L "$credentials" ]] || return 1
   SF_ORIGIN=$(/usr/bin/plutil -extract origin raw -o - "$credentials" 2>/dev/null) || return 1
   if [[ "$SF_IMPLEMENTATION" == go ]]; then
-    [[ "$SF_ORIGIN" =~ '^http://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[A-Fa-f0-9:]+\])(:[0-9]{1,5})?/?$' ]] || return 1
+    [[ "$SF_ORIGIN" =~ '^https?://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[A-Fa-f0-9:]+\])(:[0-9]{1,5})?/?$' ]] || return 1
   else
     [[ "$SF_ORIGIN" == http://control.example.invalid:8080 ]] || return 1
   fi
   SF_TOKEN=$(/usr/bin/plutil -extract clientToken raw -o - "$credentials" 2>/dev/null) || return 1
-  SF_HMAC=$(/usr/bin/plutil -extract policyHmacKey raw -o - "$credentials" 2>/dev/null) || return 1
+  SF_HMAC=$(/usr/bin/plutil -extract policyHmacKey raw -o - "$credentials" 2>/dev/null) || SF_HMAC=''
+  SF_PUBLIC=$(/usr/bin/plutil -extract policyPublicKey raw -o - "$credentials" 2>/dev/null) || SF_PUBLIC=''
   SF_AES=$(/usr/bin/plutil -extract transportKey raw -o - "$credentials" 2>/dev/null) || return 1
   SF_KEYID=$(/usr/bin/plutil -extract keyId raw -o - "$credentials" 2>/dev/null) || return 1
+  SF_PIN=$(/usr/bin/plutil -extract certificateSpkiSha256 raw -o - "$credentials" 2>/dev/null) || SF_PIN=''
+  if [[ "$SF_ORIGIN" == https://* ]]; then
+    [[ "$SF_IMPLEMENTATION" == go && "$SF_PIN" =~ '^[A-Za-z0-9+/]+={0,2}$' ]] || return 1
+    length=$(print -rn -- "$SF_PIN" | /usr/bin/base64 -D 2>/dev/null | /usr/bin/wc -c) || return 1
+    [[ $length -eq 32 ]] || return 1
+  else
+    [[ -z "$SF_PIN" ]] || return 1
+  fi
   [[ "$SF_TOKEN" =~ '^[A-Za-z0-9_-]{16,}$' && "$SF_KEYID" =~ '^[A-Za-z0-9_-]{1,64}$' ]] || return 1
-  [[ "$SF_HMAC" =~ '^[A-Za-z0-9+/]+={0,2}$' && "$SF_AES" =~ '^[A-Za-z0-9+/]+={0,2}$' ]] || return 1
+  [[ "$SF_AES" =~ '^[A-Za-z0-9+/]+={0,2}$' ]] || return 1
   length=$(print -rn -- "$SF_AES" | /usr/bin/base64 -D 2>/dev/null | /usr/bin/wc -c) || return 1
   [[ $length -eq 32 ]] || return 1
-  length=$(print -rn -- "$SF_HMAC" | /usr/bin/base64 -D 2>/dev/null | /usr/bin/wc -c) || return 1
-  [[ $length -ge 32 ]] || return 1
+  if [[ "$SF_IMPLEMENTATION" == go && -n "$SF_PUBLIC" && -z "$SF_HMAC" ]]; then
+    [[ "$SF_PUBLIC" =~ '^[A-Za-z0-9+/]+={0,2}$' ]] || return 1
+    length=$(print -rn -- "$SF_PUBLIC" | /usr/bin/base64 -D 2>/dev/null | /usr/bin/wc -c) || return 1
+    [[ $length -eq 32 ]] || return 1
+  else
+    [[ -z "$SF_PUBLIC" && "$SF_HMAC" =~ '^[A-Za-z0-9+/]+={0,2}$' ]] || return 1
+    length=$(print -rn -- "$SF_HMAC" | /usr/bin/base64 -D 2>/dev/null | /usr/bin/wc -c) || return 1
+    [[ $length -ge 32 ]] || return 1
+  fi
+}
+sf_resolve_credentials() {
+  local script_dir="$1"
+  SF_CREDENTIALS="$script_dir/client-credentials.json"
+  if [[ -f "$script_dir/external-credentials" && ! -L "$script_dir/external-credentials" ]]; then
+    [[ "$SF_IMPLEMENTATION" == go && "$(<"$script_dir/external-credentials")" == v1 && ! -e "$SF_CREDENTIALS" ]] || return 1
+    SF_CREDENTIALS="$SF_EXTERNAL_CREDENTIALS"
+    sf_safe_path "$SF_CREDENTIALS" || return 1
+    [[ -f "$SF_CREDENTIALS" && ! -L "$SF_CREDENTIALS" && \
+       $(/usr/bin/stat -f %u "$SF_CREDENTIALS") -eq 0 && \
+       $(/usr/bin/stat -f %Lp "$SF_CREDENTIALS") == 600 && \
+       $(/usr/bin/stat -f %l "$SF_CREDENTIALS") -eq 1 ]] || return 1
+  fi
+}
+sf_stage_credentials() {
+  local script_dir="$1"
+  sf_resolve_credentials "$script_dir" || return 1
+  if [[ "$SF_CREDENTIALS" == "$SF_EXTERNAL_CREDENTIALS" ]]; then
+    /bin/cp -p "$SF_CREDENTIALS" "$SF_SESSION/credentials.private.json" || return 1
+    /bin/chmod 0600 "$SF_SESSION/credentials.private.json" || return 1
+    SF_CREDENTIALS="$SF_SESSION/credentials.private.json"
+  fi
+  sf_validate_credentials "$SF_CREDENTIALS"
+}
+sf_session_credentials() {
+  local script_dir="$1"
+  if [[ -f "$script_dir/external-credentials" && ! -L "$script_dir/external-credentials" ]]; then
+    [[ "$(<"$script_dir/external-credentials")" == v1 && ! -e "$script_dir/client-credentials.json" ]] || return 1
+    SF_CREDENTIALS="$SF_SESSION/credentials.private.json"
+    sf_safe_path "$SF_CREDENTIALS" || return 1
+    [[ -f "$SF_CREDENTIALS" && ! -L "$SF_CREDENTIALS" && \
+       $(/usr/bin/stat -f %u "$SF_CREDENTIALS") -eq 0 && \
+       $(/usr/bin/stat -f %Lp "$SF_CREDENTIALS") == 600 && \
+       $(/usr/bin/stat -f %l "$SF_CREDENTIALS") -eq 1 ]] || return 1
+  else
+    SF_CREDENTIALS="$script_dir/client-credentials.json"
+  fi
+  sf_validate_credentials "$SF_CREDENTIALS"
 }
 sf_preflight() {
   local script_dir="$1" target="$2" arch major item
@@ -142,7 +197,7 @@ sf_preflight() {
   [[ $major -ge 14 ]] || { sf_log unsupported_os 1; return 1; }
   [[ -f "$script_dir/package-arch" && "$(<"$script_dir/package-arch")" == "$arch" ]] || { sf_log wrong_architecture 1; return 1; }
   [[ -f "$script_dir/package-version" && "$(<"$script_dir/package-version")" == "$SF_VERSION" ]] || return 1
-  sf_validate_credentials "$script_dir/client-credentials.json" || { sf_log invalid_credentials 1; return 1; }
+  sf_resolve_credentials "$script_dir" && sf_validate_credentials "$SF_CREDENTIALS" || { sf_log invalid_credentials 1; return 1; }
   for item in "$SF_CONFIG" "$SF_PLIST" "$SF_BIN" "$SF_SHARE" \
     /usr/local/sbin/sf-endpointai-diagnostics /usr/local/sbin/sf-endpointai-installer-logs \
     /usr/local/sbin/sf-endpointai-installer-recover; do
@@ -273,18 +328,20 @@ sf_write_config() {
   temp=$(/usr/bin/mktemp /private/etc/sf-endpointai-proxy.XXXXXX) || return 1
   print -r -- "$temp" > "$SF_SESSION/config-temp" || { /bin/rm -f "$temp"; return 1; }
   if [[ -f "$SF_CONFIG" ]]; then
-    /usr/bin/awk '!/^[[:space:]]*(export[[:space:]]+)?SF_PROXY_(CONTROL_(ORIGIN|TOKEN|HMAC_KEY|TRANSPORT_KEY|TRANSPORT_KEY_ID|SERVER_CERTIFICATE_SPKI_SHA256)|ALLOW_INSECURE_CONTROL_SERVER)=/' "$SF_CONFIG" > "$temp" || return 1
+    /usr/bin/awk '!/^[[:space:]]*(export[[:space:]]+)?SF_PROXY_(CONTROL_(ORIGIN|TOKEN|HMAC_KEY|POLICY_PUBLIC_KEY|TRANSPORT_KEY|TRANSPORT_KEY_ID|SERVER_CERTIFICATE_SPKI_SHA256)|ALLOW_INSECURE_CONTROL_SERVER)=/' "$SF_CONFIG" > "$temp" || return 1
   fi
   {
     print -r -- "SF_PROXY_CONTROL_ORIGIN='$SF_ORIGIN'"
     print -r -- "SF_PROXY_CONTROL_TOKEN='$SF_TOKEN'"
     print -r -- "SF_PROXY_CONTROL_HMAC_KEY='$SF_HMAC'"
+    print -r -- "SF_PROXY_CONTROL_POLICY_PUBLIC_KEY='$SF_PUBLIC'"
     print -r -- "SF_PROXY_CONTROL_TRANSPORT_KEY='$SF_AES'"
     print -r -- "SF_PROXY_CONTROL_TRANSPORT_KEY_ID='$SF_KEYID'"
+    print -r -- "SF_PROXY_CONTROL_SERVER_CERTIFICATE_SPKI_SHA256='$SF_PIN'"
   } >> "$temp" || return 1
   /usr/sbin/chown root:wheel "$temp" && /bin/chmod 0600 "$temp" || return 1
   /bin/mv -f "$temp" "$SF_CONFIG" || return 1
-  unset SF_TOKEN SF_HMAC SF_AES
+  unset SF_TOKEN SF_HMAC SF_PUBLIC SF_AES SF_PIN
   sf_log protected_config_written
 }
 sf_start() {

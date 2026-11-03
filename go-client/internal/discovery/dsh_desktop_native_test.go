@@ -8,8 +8,20 @@ import (
 	"testing"
 	"time"
 
+	"endpointai/client/internal/contracts"
 	"endpointai/client/internal/platform"
 )
+
+func TestWindowsDesktopPackageIdentity(t *testing.T) {
+	executable := os.Getenv("SF_PROXY_DSH_PACKAGE_TEST_EXECUTABLE")
+	if executable == "" || runtime.GOOS != "windows" {
+		t.Skip("read-only packaged Desktop fixture not requested")
+	}
+	version, verified := dshDesktopAccountRuntime(executable)
+	if !verified || version != os.Getenv("SF_PROXY_DSH_PACKAGE_TEST_VERSION") {
+		t.Fatal("packaged Desktop identity not verified", version)
+	}
+}
 
 // Explicitly opt in to read-only verification of an already installed Desktop.
 func TestInstalledWindowsDesktopAccountRuntime(t *testing.T) {
@@ -18,7 +30,7 @@ func TestInstalledWindowsDesktopAccountRuntime(t *testing.T) {
 		t.Skip("native Desktop fixture not requested")
 	}
 	version, verified := dshDesktopAccountRuntime(executable)
-	if !verified || version != "0.2.1-rc.2" {
+	if !verified || !contracts.DSHDesktopAccountVersionSupported(version) {
 		t.Fatal("installed Desktop account runtime not verified", version)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

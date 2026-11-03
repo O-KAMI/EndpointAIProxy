@@ -11,14 +11,22 @@ import (
 	"strings"
 )
 
-var controlNames = []string{"ControlServerOrigin", "ControlEnrollmentToken", "ControlPolicyHmacKey", "ControlTransportKey", "ControlTransportKeyId", "ControlServerCertificateSpkiSha256"}
+var controlNames = []string{"ControlServerOrigin", "ControlEnrollmentToken", "ControlPolicyHmacKey", "ControlPolicyPublicKey", "ControlTransportKey", "ControlTransportKeyId", "ControlServerCertificateSpkiSha256"}
 
 func credentials(raw []byte) (map[string]string, error) {
 	var values map[string]string
 	if e := json.Unmarshal(raw, &values); e != nil {
 		return nil, errors.New("invalid credentials")
 	}
-	names := []string{"origin", "clientToken", "policyHmacKey", "transportKey", "keyId"}
+	names := []string{"origin", "clientToken", "transportKey", "keyId"}
+	if _, ok := values["policyPublicKey"]; ok {
+		names = append(names, "policyPublicKey")
+	} else {
+		names = append(names, "policyHmacKey")
+	}
+	if strings.HasPrefix(values["origin"], "https://") {
+		names = append(names, "certificateSpkiSha256")
+	}
 	if len(values) != len(names) {
 		return nil, errors.New("invalid credentials")
 	}
@@ -29,14 +37,21 @@ func credentials(raw []byte) (map[string]string, error) {
 	}
 	transport, e := base64.StdEncoding.DecodeString(values["transportKey"])
 	hmac, he := base64.StdEncoding.DecodeString(values["policyHmacKey"])
-	if !validOrigin(values["origin"]) || !regexp.MustCompile(`^[A-Za-z0-9_-]{16,}$`).MatchString(values["clientToken"]) || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(values["keyId"]) || e != nil || len(transport) != 32 || he != nil || len(hmac) < 32 {
+	public, pe := base64.StdEncoding.DecodeString(values["policyPublicKey"])
+	pin, pinErr := base64.StdEncoding.DecodeString(values["certificateSpkiSha256"])
+	keyOK := (values["policyPublicKey"] == "" && he == nil && len(hmac) >= 32) || (values["policyHmacKey"] == "" && pe == nil && len(public) == 32)
+	pinOK := !strings.HasPrefix(values["origin"], "https://") || (pinErr == nil && len(pin) == 32)
+	if !validOrigin(values["origin"]) || !regexp.MustCompile(`^[A-Za-z0-9_-]{16,}$`).MatchString(values["clientToken"]) || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(values["keyId"]) || e != nil || len(transport) != 32 || !keyOK || !pinOK {
 		return nil, errors.New("invalid credentials")
 	}
-	return map[string]string{"ControlServerOrigin": values["origin"], "ControlEnrollmentToken": values["clientToken"], "ControlPolicyHmacKey": values["policyHmacKey"], "ControlTransportKey": values["transportKey"], "ControlTransportKeyId": values["keyId"], "ControlServerCertificateSpkiSha256": ""}, nil
+	return map[string]string{"ControlServerOrigin": values["origin"], "ControlEnrollmentToken": values["clientToken"], "ControlPolicyHmacKey": values["policyHmacKey"], "ControlPolicyPublicKey": values["policyPublicKey"], "ControlTransportKey": values["transportKey"], "ControlTransportKeyId": values["keyId"], "ControlServerCertificateSpkiSha256": values["certificateSpkiSha256"]}, nil
 }
 func validOrigin(raw string) bool {
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		return false
+	}
 	u, e := url.Parse(raw)
-	if e != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.Opaque != "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(raw, "\r\n\t #?") {
+	if e != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Opaque != "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(raw, "\r\n\t #?") {
 		return false
 	}
 	host := u.Hostname()
@@ -64,7 +79,7 @@ func controlOverride(line string) bool {
 	if name == "SF_PROXY_ALLOW_INSECURE_CONTROL_SERVER" {
 		return true
 	}
-	for _, suffix := range []string{"ORIGIN", "TOKEN", "HMAC_KEY", "TRANSPORT_KEY", "TRANSPORT_KEY_ID", "SERVER_CERTIFICATE_SPKI_SHA256"} {
+	for _, suffix := range []string{"ORIGIN", "TOKEN", "HMAC_KEY", "POLICY_PUBLIC_KEY", "TRANSPORT_KEY", "TRANSPORT_KEY_ID", "SERVER_CERTIFICATE_SPKI_SHA256"} {
 		if name == "SF_PROXY_CONTROL_"+suffix {
 			return true
 		}

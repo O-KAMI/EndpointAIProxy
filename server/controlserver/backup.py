@@ -65,7 +65,12 @@ def run_backup(cfg, retention=7, dump_binary="mysqldump"):
         state = read_backup_state(cfg)
         temporary = None
         try:
-            ControlStore(cfg).check_schema()
+            control = ControlStore(cfg)
+            control.check_schema()
+            tables = schema_tables()
+            if control._credential_rotation_table:
+                from .credential_rotation import TABLE
+                tables = tables | {TABLE}
             name = utcnow().strftime("control-%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8] + ".sql.gz"
             output = cfg.BACKUP_DIR / name
             fd, temporary = tempfile.mkstemp(dir=cfg.BACKUP_DIR, prefix=".incomplete-")
@@ -73,7 +78,7 @@ def run_backup(cfg, retention=7, dump_binary="mysqldump"):
                 with mysql_credentials(cfg) as defaults, tempfile.TemporaryFile() as errors:
                     command = [dump_binary, f"--defaults-extra-file={defaults}", "--single-transaction",
                         "--quick", "--skip-lock-tables", "--no-tablespaces", "--set-gtid-purged=OFF",
-                        "--hex-blob", "--default-character-set=utf8mb4", cfg.MYSQL_DATABASE, *sorted(schema_tables())]
+                        "--hex-blob", "--default-character-set=utf8mb4", cfg.MYSQL_DATABASE, *sorted(tables)]
                     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors)
                     try:
                         shutil.copyfileobj(process.stdout, compressed)
@@ -102,7 +107,7 @@ def run_backup(cfg, retention=7, dump_binary="mysqldump"):
             try:
                 atomic_json(output.with_suffix(output.suffix + ".json"), {
                     "formatVersion": 1, "sha256": digest, "database": cfg.MYSQL_DATABASE,
-                    "tables": sorted(schema_tables()), "createdAtUtc": timestamp(utcnow()),
+                    "tables": sorted(tables), "createdAtUtc": timestamp(utcnow()),
                 })
             except Exception:
                 # Archives without a manifest cannot be restored or retained safely.
@@ -141,9 +146,15 @@ def restore_backup(cfg, archive, target_database, mysql_binary="mysql"):
         raise ValueError("Target database must contain only letters, digits and underscore")
     archive = Path(archive)
     manifest = json.loads(Path(str(archive) + ".json").read_text())
-    if (manifest.get("formatVersion") != 1 or set(manifest.get("tables", [])) != schema_tables()
+    tables = set(manifest.get("tables", []))
+    from .credential_rotation import TABLE
+    schema4_tables = schema_tables() - {"policy_rollout_batches", "policy_rollout_targets"}
+    schema3_tables = schema4_tables - {"rollout_batches", "rollout_targets"}
+    if (manifest.get("formatVersion") != 1 or tables not in (schema_tables(), schema_tables() | {TABLE}, schema4_tables, schema3_tables)
             or digest_file(archive) != manifest.get("sha256")):
         raise ValueError("Backup manifest/checksum mismatch")
+    if cfg.CREDENTIAL_ROTATION and TABLE not in tables:
+        raise ValueError('Backup omits credential renewal state; disable renewal and reconcile the restored target before serving clients')
     # Decompress fully first. A corrupt backup must not partially modify the target.
     with tempfile.TemporaryFile() as sql:
         with gzip.open(archive, "rb") as source:
@@ -163,5 +174,17 @@ def restore_backup(cfg, archive, target_database, mysql_binary="mysql"):
                 stdin=sql, stdout=subprocess.DEVNULL, stderr=errors, check=False)
             if process.returncode:
                 raise RuntimeError("MYSQL_RESTORE_FAILED; target may be partially restored; do not start service")
+        if tables in (schema3_tables, schema4_tables):
+            # Older archives predate rollout tables. Migrate only the empty
+            # restore target; the source database is never modified here.
+            target.EMPLOYEE_INDEX = False
+            try:
+                control.migrate()
+            finally:
+                target.EMPLOYEE_INDEX = cfg.EMPLOYEE_INDEX
+        if target.EMPLOYEE_INDEX:
+            # The lookup is derived from restored heartbeats and is deliberately
+            # excluded from the stable backup manifest.
+            control.ensure_scale_indexes()
         control.check_schema()
         return control.policy()

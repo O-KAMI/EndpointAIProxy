@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -112,8 +113,15 @@ func (s *Store) append(path string, value any) error {
 				return e
 			}
 		}
-		if e = os.MkdirAll(filepath.Dir(path), 0700); e != nil {
+		if e = s.ensureCaptureDirectory(filepath.Dir(path)); e != nil {
 			return e
+		}
+		if info, err := os.Lstat(path); err == nil {
+			if !info.Mode().IsRegular() {
+				return errors.New("summary is not a regular file")
+			}
+		} else if !os.IsNotExist(err) {
+			return err
 		}
 		// Preserve the legacy per-record WriteThrough contract. Keeping the
 		// descriptor avoids open/close overhead without buffering acknowledgments.
@@ -127,7 +135,7 @@ func (s *Store) append(path string, value any) error {
 	s.summarySequence++
 	writer.used = s.summarySequence
 	writeAt := s.performanceStart()
-	n, e := writer.file.Write(line)
+	n, e := (captureQuotaWriter{s, writer.file}).Write(line)
 	s.performance("summary_write", writeAt)
 	if e == nil && n != len(line) {
 		e = io.ErrShortWrite
@@ -153,6 +161,9 @@ func (s *Store) removeManaged(path string, now time.Time) (bool, error) {
 	defer s.mu.Unlock()
 	if s.active[path] {
 		return false, nil
+	}
+	if strings.HasPrefix(filepath.Clean(path), filepath.Join(s.Root, "captures")+string(filepath.Separator)) {
+		return s.removeCapture(path)
 	}
 	e := os.Remove(path)
 	return e == nil || os.IsNotExist(e), e

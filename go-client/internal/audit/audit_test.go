@@ -78,6 +78,33 @@ func TestConcurrentCompletionPreservesSummaryRecords(t *testing.T) {
 func fixtureRecord() proxy.Record {
 	return proxy.Record{RequestID: "fixture-request", Started: time.Now().UTC(), Route: contracts.Route{RouteID: "abcdefghijklmnopqrstuv", UserSID: "fixture-user", ProviderID: "direct", OriginalBaseURL: "https://origin.example?api_key=url-secret"}, UserID: "fixture", Agent: "Codex", Surface: "cli", Inbound: "/r/fixture/responses?token=inbound-secret", Outbound: "https://origin.example/v1/responses?key=outbound-secret"}
 }
+
+func TestLowDiskSpaceStopsCaptureAndSignalsDegraded(t *testing.T) {
+	s := New(t.TempDir())
+	t.Cleanup(s.CloseLogs)
+	s.availableSpace = func(string) (uint64, error) { return minimumFreeBytes - 1, nil }
+	if capture := s.Start(fixtureRecord()); capture != nil || !s.Degraded() {
+		t.Fatal("low disk must reject new capture and mark audit degraded")
+	}
+
+	s = New(t.TempDir())
+	t.Cleanup(s.CloseLogs)
+	free := minimumFreeBytes + 1024
+	s.availableSpace = func(string) (uint64, error) { return free, nil }
+	capture := s.Start(fixtureRecord())
+	if capture == nil {
+		t.Fatal("capture should start with sufficient space")
+	}
+	session := capture.(*Session)
+	capture.Request([]byte("before"))
+	free = minimumFreeBytes - 1
+	session.lastSpaceCheck = time.Now().Add(-time.Second)
+	capture.Request([]byte("after"))
+	if !session.failed || !s.Degraded() || session.requestBytes != 11 || session.captured != 6 {
+		t.Fatalf("low disk did not stop capture while hashing traffic: %#v", session)
+	}
+	capture.Complete("SUCCESS", 200, "", 0)
+}
 func TestCaptureCombinedLimitHashesRedactionAndSummary(t *testing.T) {
 	s := New(t.TempDir())
 	t.Cleanup(s.CloseLogs)

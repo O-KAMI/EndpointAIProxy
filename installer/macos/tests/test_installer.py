@@ -334,6 +334,79 @@ sys.exit(0)
         self.assertEqual((self.bin/'version').read_text(),'0.2.0')
         self.assertIn('local_ready',self.outcomes())
 
+    def test_go_public_key_credentials_replace_legacy_control_overrides(self):
+        self.old_install(); self.select_go_package()
+        public = base64.b64encode(b'p' * 32).decode()
+        data = dict(self.credentials)
+        del data['policyHmacKey']
+        data['policyPublicKey'] = public
+        (self.scripts/'client-credentials.json').write_text(json.dumps(data))
+        with self.config.open('a') as stream:
+            stream.write("SF_PROXY_CONTROL_HMAC_KEY='old-synthetic'\nSF_PROXY_CONTROL_POLICY_PUBLIC_KEY='stale'\n")
+        self.run_script('preinstall'); self.go_payload(); self.run_script('postinstall')
+        text = self.config.read_text()
+        self.assertIn("SF_PROXY_CONTROL_POLICY_PUBLIC_KEY='" + public + "'", text)
+        self.assertIn("SF_PROXY_CONTROL_HMAC_KEY=''", text)
+        self.assertNotIn('old-synthetic', text)
+        self.assertNotIn("SF_PROXY_CONTROL_POLICY_PUBLIC_KEY='stale'", text)
+
+    def test_go_https_credentials_write_certificate_pin(self):
+        self.old_install(); self.select_go_package()
+        data = dict(self.credentials)
+        data['origin'] = 'https://control.example.test'
+        data['certificateSpkiSha256'] = base64.b64encode(b'p' * 32).decode()
+        (self.scripts/'client-credentials.json').write_text(json.dumps(data))
+        self.run_script('preinstall'); self.go_payload(); self.run_script('postinstall')
+        self.assertIn("SF_PROXY_CONTROL_SERVER_CERTIFICATE_SPKI_SHA256='" + data['certificateSpkiSha256'] + "'", self.config.read_text())
+
+    def test_go_https_credentials_reject_missing_pin(self):
+        self.old_install(); self.select_go_package()
+        data = dict(self.credentials)
+        data['origin'] = 'https://control.example.test'
+        (self.scripts/'client-credentials.json').write_text(json.dumps(data))
+        self.run_script('preinstall', False)
+        self.assertFalse((self.root/'mock-actions.txt').exists())
+
+    def test_go_http_credentials_reject_pin(self):
+        self.old_install(); self.select_go_package()
+        data = dict(self.credentials)
+        data['certificateSpkiSha256'] = base64.b64encode(b'p' * 32).decode()
+        (self.scripts/'client-credentials.json').write_text(json.dumps(data))
+        self.run_script('preinstall', False)
+        self.assertFalse((self.root/'mock-actions.txt').exists())
+
+    def test_go_external_credentials_are_snapshotted_before_payload(self):
+        self.old_install(); self.select_go_package()
+        original = (self.scripts/'client-credentials.json').read_text()
+        external = self.root/'private/etc/sf-endpointai-client-credentials.json'
+        external.write_text(original); external.chmod(0o600)
+        (self.scripts/'client-credentials.json').unlink()
+        (self.scripts/'external-credentials').write_text('v1\n')
+        self.run_script('preinstall')
+        self.assertTrue((self.session/'credentials.private.json').is_file())
+        external.write_text('{}')  # The postinstall must use the preinstall snapshot.
+        self.go_payload(); self.run_script('postinstall')
+        self.assertIn("SF_PROXY_CONTROL_TOKEN='" + self.credentials['clientToken'] + "'", self.config.read_text())
+        self.assertFalse(self.session.exists())
+
+    def test_go_external_credentials_reject_insecure_or_ambiguous_sources(self):
+        self.old_install(); self.select_go_package()
+        original = (self.scripts/'client-credentials.json').read_text()
+        external = self.root/'private/etc/sf-endpointai-client-credentials.json'
+        external.write_text(original); external.chmod(0o644)
+        (self.scripts/'client-credentials.json').unlink()
+        (self.scripts/'external-credentials').write_text('v1\n')
+        self.run_script('preinstall', False)
+        self.assertFalse((self.root/'mock-actions.txt').exists())
+        external.chmod(0o600)
+        os.link(external, self.root/'private/etc/credentials-hardlink')
+        self.run_script('preinstall', False)
+        self.assertFalse((self.root/'mock-actions.txt').exists())
+        (self.root/'private/etc/credentials-hardlink').unlink()
+        (self.scripts/'client-credentials.json').write_text(original)
+        self.run_script('preinstall', False)
+        self.assertFalse((self.root/'mock-actions.txt').exists())
+
     def test_go_development_bundle_failure_restores_old_dotnet_layout(self):
         self.old_install();self.select_go_package()
         self.run_script('preinstall');self.go_payload();self.run_script('postinstall',False,'foreign_health')

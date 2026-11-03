@@ -1,7 +1,14 @@
-# EndpointAIProxy Go 客户端候选版 0.2.2
+# EndpointAIProxy Go 客户端候选版 0.2.21
 
 此模块提供 Windows x64、macOS arm64/x64 共用的 Go 后台客户端。旧 .NET 0.1.22
-源码、默认构建入口和回退材料继续保留；候选实现尚不等于已批准替换生产客户端。
+源码、构建入口和回退材料继续保留；候选实现尚不等于已批准替换生产客户端。
+当前验收材料为 0.2.21 r2；摘要及实际验证范围以[当前交付结果](../docs/OPTIMIZATION-CURRENT-RESULT.md)为准。
+Windows 未签名为确认要求；双端原生安装、真实业务与 8 小时长稳尚未完成。
+
+工作树的设备凭据两阶段更新使用平台保护的待更新记录，提交时原子更新 Token 和传输绑定；
+需要固定服务端公钥的 HTTPS、设备传输 V2 和服务端明确协商，生产 HTTP 配置不会启用。
+未完成轮换时禁止自动重新注册，人工恢复须先由配置的服务端校验凭据。当前验证与交付
+状态见 [项目地图](../CONTEXT.md)；不提供设备独立私钥、硬件证明或整个状态库的防回滚。
 
 ## 实现与兼容
 
@@ -9,7 +16,8 @@
   服务、权限、密钥保护和诊断。
 - 保留 `127.0.0.1:18080`、`/r/{routeId}`、`/healthz`、`--maintenance=detach-all`、
   `--maintenance=collect-diagnostics`、已有 `SF_PROXY_*` 部署配置和服务/数据目录。
-- 沿用 AES-GCM/HKDF 控制协议、原始策略正文 HMAC、.NET 命令序列化签名、网关元数据签名。
+- 沿用 AES-GCM/HKDF 控制协议、.NET 命令序列化及网关元数据签名；策略和命令支持旧版 HMAC，
+  也支持由服务端私钥签发、客户端公钥验签的 Ed25519 模式。
 - 沿用旧 SQLite schema、整数枚举、设备身份、路由 ID、策略缓存、凭据和命令回执。
   Windows 使用 DPAPI；macOS 使用原 `machine.key` 和原密文布局。缺失已有状态的密钥会阻止启动。
 - Claude JSON、Codex TOML、CC Switch provider/endpoint 支持备份、并发检测和恢复；
@@ -38,10 +46,11 @@ cd go-client
 GOPROXY=https://goproxy.cn,direct go mod download
 go test -race ./...
 go vet ./...
-sh scripts/build.sh
+VERSION=0.2.21 sh scripts/build.sh
 ```
 
-输出位于 `artifacts/go-client/0.2.2/`，含三种架构的服务和 Windows 无窗口安装辅助程序。
+按以上显式版本构建时，输出位于 `artifacts/go-client/0.2.21/`，含三种架构的服务和 Windows 无窗口安装辅助程序。
+脚本的默认版本仍为历史值；正式构建须显式传入版本，版本号本身不证明与冻结验收包相同。
 没有 .NET runtime payload。测试只使用临时数据；原生服务安装另在隔离终端验收。
 
 真实 C# / Go 双向数据兼容验证：
@@ -93,10 +102,10 @@ python3 scripts/soak.py --go /path/to/signed/executable \
   --control-helper /path/to/soak-control --output /path/to/report.json
 ```
 
-默认运行 4 小时，使用临时 profile、加密模拟控制面、模拟网关和持久身份，覆盖并发
+默认运行 8 小时，使用临时 profile、加密模拟控制面、模拟网关和持久身份，覆盖并发
 JSON/SSE、配置发现/接管/恢复、心跳与资产/事件、捕获压缩、保留清理及三次重启。
 新请求头和捕获请求编号逐条关联；报告记录实际程序 SHA256、RSS/CPU/磁盘趋势。
-`--hours` 较短时明确标为 smoke，绝不计为 4 小时通过。恢复用关闭自动接管后的认证
+`--hours` 少于 8 小时时明确标为 smoke，不能计为新的 8 小时门禁通过。恢复用关闭自动接管后的认证
 管理接口检查临时文件；管理员维护命令和真实系统服务安装仍须单独验收。
 
 当前捕获使用 64 KiB 缓冲，响应缓冲池减少重复分配；摘要采用与旧版一致的写穿语义，
@@ -108,8 +117,8 @@ SSE 也出现轻微超标，延迟门禁尚未稳定达标。不能挑选通过�
 历史 0.2.1 Apple Silicon 已完成含 3 次重启的 4 小时功能长稳；原生部署及延迟仍须验收。完整仓库中的实测记录见
 [`GO-CLIENT-VERIFICATION.md`](../docs/GO-CLIENT-VERIFICATION.md)。
 
-发布前还需完成 Windows、Intel Mac 原生验收、真实 IOA、正式签名/公证、覆盖升级/卸载
-和目标平台 4 小时门禁；历史 0.2.1 ARM64 功能长稳已通过，0.2.2 r3 需重新验证。客户端运行与数据库必须保持单实例；回退先停 Go，再用原安装恢复流程
+发布前还需完成 Windows、Intel Mac 原生验收、真实 IOA、Mac 正式签名/公证、覆盖升级/卸载
+和当前 8 小时长稳门禁；Windows 推广包按要求不签名。历史 0.2.1 ARM64 的 4 小时结果不能替代当前门禁。客户端运行与数据库必须保持单实例；回退先停 Go，再用原安装恢复流程
 恢复 .NET，不能对仍在运行的服务强制执行 MSI 降级。
 
 ## DSH

@@ -5,6 +5,19 @@ import (
 	"testing"
 )
 
+func TestDSHDesktopAccountVersionPins(t *testing.T) {
+	for _, version := range []string{"0.2.1-rc.2", "0.2.1-rc.3"} {
+		if !DSHDesktopAccountVersionSupported(version) {
+			t.Fatal("reviewed Desktop rejected", version)
+		}
+	}
+	for _, version := range []string{"", "0.2.1-alpha.5", "0.2.1-rc.4", "0.2.1", "0.2.1-rc.3-nightly", "0.2.1-rc.3 ", "v0.2.1-rc.3"} {
+		if DSHDesktopAccountVersionSupported(version) {
+			t.Fatal("unreviewed Desktop accepted", version)
+		}
+	}
+}
+
 func TestAgentTypeDSHAppendOnly(t *testing.T) {
 	legacy := []string{"claudeCode", "codexCli", "qoderCli", "qoderIde", "ccSwitch", "unknownCandidate", "codexIde", "codexDesktop", "claudeCli", "claudeIde", "claudeDesktop"}
 	for i, name := range legacy {

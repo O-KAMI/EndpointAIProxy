@@ -1,9 +1,16 @@
-# 独立终端验收：同一候选 MSI
+# 独立终端验收：0.2.4 与历史 r15
 
-当前 0.2.3 仍是验收候选。控制端兼容探针已通过，Windows 长稳及独立终端等发布门禁尚待完成。
+当前 0.2.4 的 IOA 安装、目标用户 SID 绑定、干净首装和回传步骤以
+[Windows 0.2.4 记录](WINDOWS-024-ACCEPTANCE.md)为准。新脚本不再写死版本，拒绝复用旧 schema 1 基线。
+SYSTEM 必须指定目标交互用户 SID；应用对话检查由目标用户运行。
+下面保留原 0.2.3 r15 验收说明，不用于新包放行。
+
+当前 0.2.3 仍是验收候选。本机 Windows 长稳和控制端单终端策略验收已通过，独立终端证据尚待完成。
 下面仅供独立验收，不是生产推广命令。不要把受限 MSI、原始安装日志、Codex 事件或配置备份上传到公共服务。
 
-已有旧客户端的电脑用于覆盖升级，不能作为干净首装。若旧客户端已接管 Codex，先通过既有控制端暂停该终端，
+已有旧客户端的电脑直接覆盖升级，不先卸载，也不删除服务或状态目录。卸载是升级成功后的独立生命周期验收，不是升级前置条件。
+本机已通过同一 r15 MSI 从 0.1.22 覆盖升级；其他旧版本仍须保留实际版本及升级结果。
+已有旧客户端的电脑不能作为干净首装。若旧客户端已接管 Codex，先通过既有控制端暂停该终端，
 确认 Codex 已恢复到可用的 DeepSeek 原入口后再执行 Prepare，使卸载恢复摘要基线对应原配置而非旧代理 URL。
 升级时不使用 RequireCleanInstall；安装后通过控制端恢复代理，再执行 Codex、Paused 和 Resumed。
 独立干净首装必须另用无旧服务、注册与状态的隔离环境，不清空现有电脑来伪造该门禁。
@@ -19,14 +26,22 @@
 SYSTEM 安装另外由 IOA 或系统身份执行，保留退出码及收据，不能用管理员身份结果替代。
 
 ```powershell
-$msi = 'D:\EndpointAI-Acceptance\EndpointAIDLP-Client-0.2.3-go-win-x64.msi'
+$package = 'D:\EndpointAI-Acceptance' # 改为实际解压目录
+$msi = Join-Path $package 'EndpointAIDLP-Client-0.2.3-go-win-x64.msi'
 $sha = '<替换为候选目录 SHA-256 文件中的 64 位摘要>'
-$out = 'D:\EndpointAI-Acceptance\evidence'
-$test = 'D:\EndpointAI-Acceptance\scripts\Test-IndependentTerminal.ps1'
+$out = Join-Path $env:USERPROFILE 'EndpointAIProxyAcceptance\0.2.3-r15'
+$test = Join-Path $package 'scripts\Test-IndependentTerminal.ps1'
+# 若已双击 Start-Prepare.cmd，则不重复运行下一行；两种方式使用同一个报告目录。
 & $test -Phase Prepare -MsiFile $msi -ExpectedMsiSha256 $sha -OutputDirectory $out
-& $test -Phase Install -RequireCleanInstall -MsiFile $msi -ExpectedMsiSha256 $sha -OutputDirectory $out
+# 在同一用户的管理员 PowerShell 中运行：保留旧版，直接安装新 MSI。
+& $test -Phase Install -MsiFile $msi -ExpectedMsiSha256 $sha -OutputDirectory $out
+# 若准备时暂停过代理，先由控制端恢复并确认 Enabled，再由目标交互用户运行：
 & $test -Phase Codex -MsiFile $msi -ExpectedMsiSha256 $sha -OutputDirectory $out
 ```
+
+上面的 Install 调用 `msiexec /i ... /qn /norestart`，由 MSI 完成覆盖升级，不先执行 `/x`。
+准备时暂停代理只为记录未接管的 Codex 恢复基线，是本次验收步骤；不是生产覆盖升级的前置要求。
+干净首装另在无旧服务、注册及状态的隔离 Windows 中执行，同样使用 Prepare，然后仅在该环境的 Install 命令添加 `-RequireCleanInstall`。
 
 Prepare 记录启动时间、原配置摘要及服务是否存在，私有备份仅保存在受限目录。
 干净首装要求 Prepare 和 Install 时均没有旧服务、相关 MSI 注册及遗留数据目录；
@@ -43,7 +58,7 @@ Prepare 记录启动时间、原配置摘要及服务是否存在，私有备份
    确认已解除接管、请求按原配置工作。恢复后保存新命令及回执，再执行 `-Phase Resumed`。
 3. 检查取消、SSE 中断与错误传播，保留请求关联，不在报告中粘贴响应正文或认证头。
 4. 人工执行真实重启，登录后执行 `-Phase AfterReboot`；脚本验证启动时间变化及服务自动运行。
-5. 保存诊断并执行 `-Phase Uninstall`。验证服务移除、Codex 恢复及账户可用，再安装同一 MSI 验证重装。
+5. 仅在覆盖升级、功能和重启验证完成后，保存诊断并执行 `-Phase Uninstall`，单独验收卸载。验证服务移除、Codex 恢复及账户可用，再安装同一 MSI 验证重装。此步骤不是覆盖升级前的准备，也不计作干净首装。
    若用户中途修改配置，摘要不一致应人工检查，禁止用备份直接覆盖后来修改。
 6. 同包修复、重复安装、SYSTEM 静默安装和受控失败回滚分别保留独立证据，不能合并为一次安装成功。
 

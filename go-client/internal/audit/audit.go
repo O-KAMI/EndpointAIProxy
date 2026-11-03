@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -26,8 +27,14 @@ import (
 )
 
 const DefaultBodyLimit int64 = 50 * 1024 * 1024
+const minimumFreeBytes uint64 = 512 * 1024 * 1024
 
 type Store struct {
+	quotaMu            sync.Mutex
+	quotaUsed          int64
+	quotaInitialized   bool
+	quotaPressure      atomic.Bool
+	captureLimit       int64
 	Root               string
 	BodyLimit          int64
 	mu                 sync.Mutex
@@ -58,13 +65,17 @@ type Store struct {
 	LogFileLimit       int64
 	dropped            atomic.Int64
 	degraded           atomic.Bool
+	availableSpace     func(string) (uint64, error)
 }
 
 func New(root string) *Store {
-	return &Store{Root: root, BodyLimit: DefaultBodyLimit, LogFileLimit: 20 << 20, active: make(map[string]bool), summaryWriters: make(map[string]*summaryWriter), activeDays: make(map[string]int), queue: make(chan string, 128), logQueue: make(chan map[string]any, 4096), priorityQueue: make(chan map[string]any, 256), statistics: make(map[string]int64), rate: make(map[string]rateWindow)}
+	return &Store{Root: root, captureLimit: captureCapacity, BodyLimit: DefaultBodyLimit, LogFileLimit: 20 << 20, active: make(map[string]bool), summaryWriters: make(map[string]*summaryWriter), activeDays: make(map[string]int), queue: make(chan string, 128), logQueue: make(chan map[string]any, 4096), priorityQueue: make(chan map[string]any, 256), statistics: make(map[string]int64), rate: make(map[string]rateWindow), availableSpace: diskAvailable}
 }
 func (s *Store) Degraded() bool { return s.degraded.Load() }
 func safe(value string) string {
+	if value == "." || value == ".." {
+		return "_"
+	}
 	return strings.Map(func(r rune) rune {
 		if r < ' ' || r == '/' || r == '\\' || r == ':' {
 			return '_'
@@ -110,6 +121,7 @@ type Session struct {
 	requestStarted, responseStarted, completed, failed bool
 	failure                                            observability.Detail
 	timing                                             map[string]time.Time
+	lastSpaceCheck                                     time.Time
 }
 
 func (s *Store) Start(rec proxy.Record) proxy.Capture {
@@ -127,8 +139,12 @@ func (s *Store) Start(rec proxy.Record) proxy.Capture {
 		}
 	}()
 	dir := filepath.Join(s.Root, "captures", safe(rec.Route.UserSID), rec.Started.Format("2006-01-02"))
-	if e := os.MkdirAll(dir, 0700); e != nil {
-		s.captureFailure("capture_create_directory", e)
+	if e := s.ensureCaptureDirectory(dir); e != nil {
+		s.captureFailure("capture_directory_unsafe", e)
+		return nil
+	}
+	if e := s.checkSpace(dir); e != nil {
+		s.captureFailure("capture_disk_space", e)
 		return nil
 	}
 	stem := rec.Started.Format("20060102T150405.000Z") + "_" + strings.ReplaceAll(rec.RequestID, "-", "")
@@ -138,7 +154,7 @@ func (s *Store) Start(rec proxy.Record) proxy.Capture {
 		s.captureFailure("capture_open", e)
 		return nil
 	}
-	c := &Session{store: s, record: rec, file: f, partial: partial, complete: filepath.Join(dir, stem+".md"), requestHash: sha256.New(), responseHash: sha256.New(), timing: map[string]time.Time{"AgentRequestReceivedAtUtc": rec.Started}}
+	c := &Session{store: s, record: rec, file: f, partial: partial, complete: filepath.Join(dir, stem+".md"), requestHash: sha256.New(), responseHash: sha256.New(), timing: map[string]time.Time{"AgentRequestReceivedAtUtc": rec.Started}, lastSpaceCheck: time.Now()}
 	c.buffer = bufio.NewWriterSize(f, 64*1024)
 	s.mu.Lock()
 	s.active[partial] = true
@@ -152,7 +168,7 @@ func (s *Session) write(value string) {
 	if s.failed {
 		return
 	}
-	if _, e := io.WriteString(s.buffer, value); e != nil {
+	if _, e := io.WriteString(captureQuotaWriter{s.store, s.buffer}, value); e != nil {
 		s.failed = true
 		s.store.captureFailure("capture_write", e)
 	}
@@ -191,6 +207,13 @@ func (s *Session) Timing(stage string, at time.Time) {
 	}
 }
 func (s *Session) bytes(p []byte) {
+	if !s.failed && time.Since(s.lastSpaceCheck) >= time.Second {
+		s.lastSpaceCheck = time.Now()
+		if e := s.store.checkSpace(filepath.Dir(s.partial)); e != nil {
+			s.failed = true
+			s.store.captureFailure("capture_disk_space", e)
+		}
+	}
 	remaining := s.store.BodyLimit - s.captured
 	if remaining <= 0 || s.failed {
 		return
@@ -198,12 +221,23 @@ func (s *Session) bytes(p []byte) {
 	if int64(len(p)) > remaining {
 		p = p[:remaining]
 	}
-	n, e := s.buffer.Write(p)
+	n, e := (captureQuotaWriter{s.store, s.buffer}).Write(p)
 	s.captured += int64(n)
 	if e != nil {
 		s.failed = true
 		s.store.captureFailure("capture_write", e)
 	}
+}
+
+func (s *Store) checkSpace(path string) error {
+	free, err := s.availableSpace(path)
+	if err != nil {
+		return err
+	}
+	if free < minimumFreeBytes {
+		return errors.New("CAPTURE_DISK_LOW")
+	}
+	return nil
 }
 func (s *Session) Request(p []byte) {
 	s.mu.Lock()
@@ -458,6 +492,14 @@ func (s *Store) Run(ctx context.Context) {
 	}
 }
 func (s *Store) compress(path string) error {
+	isCapture := strings.HasPrefix(filepath.Clean(path), filepath.Join(s.Root, "captures")+string(filepath.Separator))
+	remove := func(path string) error {
+		if isCapture {
+			_, err := s.removeCapture(path)
+			return err
+		}
+		return os.Remove(path)
+	}
 	started := s.performanceStart()
 	defer func() { s.performance("compression", started) }()
 	s.compressionMu.Lock()
@@ -502,7 +544,7 @@ func (s *Store) compress(path string) error {
 		if !temporary.Mode().IsRegular() {
 			return fmt.Errorf("compression temporary is not a regular file")
 		}
-		if err = os.Remove(path + ".gz.tmp"); err != nil {
+		if err = remove(path + ".gz.tmp"); err != nil {
 			return err
 		}
 	} else if !os.IsNotExist(err) {
@@ -516,12 +558,16 @@ func (s *Store) compress(path string) error {
 	defer func() {
 		out.Close()
 		if !ok {
-			os.Remove(path + ".gz.tmp")
+			_ = remove(path + ".gz.tmp")
 		}
 	}()
 	// The legacy compressor uses CompressionLevel.Fastest. Request evidence
 	// is bounded and retained by size; prefer the same CPU/latency tradeoff.
-	z, e := gzip.NewWriterLevel(out, gzip.BestSpeed)
+	var target io.Writer = out
+	if isCapture {
+		target = captureQuotaWriter{s, out}
+	}
+	z, e := gzip.NewWriterLevel(target, gzip.BestSpeed)
 	if e != nil {
 		return e
 	}
@@ -545,7 +591,7 @@ func (s *Store) compress(path string) error {
 		return e
 	}
 	_ = os.Chtimes(path+".gz", info.ModTime(), info.ModTime())
-	if e = os.Remove(path); e != nil {
+	if e = remove(path); e != nil {
 		return e
 	}
 	ok = true
@@ -561,7 +607,7 @@ func (s *Store) Maintain(now time.Time) {
 	for _, scope := range []struct {
 		dir             string
 		maximum, target int64
-	}{{"captures", 512 << 20, 512 << 20}, {filepath.Join("logs", "service"), 50 << 20, 45 << 20}} {
+	}{{"captures", s.captureLimit, s.captureLimit * 15 / 16}, {filepath.Join("logs", "service"), 50 << 20, 45 << 20}} {
 		var files []managedFile
 		var total int64
 		e := filepath.WalkDir(filepath.Join(s.Root, scope.dir), func(path string, d os.DirEntry, walkErr error) error {
@@ -621,7 +667,7 @@ func (s *Store) Maintain(now time.Time) {
 				}
 			}
 		}
-		if total > scope.maximum {
+		if total > scope.maximum || (scope.dir == "captures" && s.quotaPressure.Swap(false)) {
 			for i := range files {
 				if total <= scope.target {
 					break

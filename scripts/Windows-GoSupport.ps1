@@ -28,12 +28,17 @@ function Assert-GoPayload([string]$ServiceDirectory, [string]$ActionsDirectory) 
 }
 function Assert-ClientCredentials([string]$Path) {
   try { $data = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json } catch { throw 'Credential JSON is unreadable; content withheld.' }
-  if ((@($data.PSObject.Properties.Name | Sort-Object) -join ',') -ne 'clientToken,keyId,origin,policyHmacKey,transportKey') { throw 'Credential input must contain the existing five fields.' }
+  $fields = @($data.PSObject.Properties.Name | Sort-Object) -join ','
+  if ($fields -notin @('clientToken,keyId,origin,policyHmacKey,transportKey','clientToken,keyId,origin,policyPublicKey,transportKey','certificateSpkiSha256,clientToken,keyId,origin,policyHmacKey,transportKey','certificateSpkiSha256,clientToken,keyId,origin,policyPublicKey,transportKey')) { throw 'Credential input must contain exactly one policy verification key.' }
   $uri = $null
-  if (-not [Uri]::TryCreate([string]$data.origin,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'http' -or $uri.UserInfo -ne '' -or $uri.Query -ne '' -or $uri.Fragment -ne '' -or ($uri.AbsolutePath -ne '/' -and $uri.AbsolutePath -ne '') -or $data.origin -match '[\r\n\t #?]') { throw 'Credential origin must be the existing encrypted-transport HTTP origin without path, userinfo, query or fragment.' }
+  if (-not [Uri]::TryCreate([string]$data.origin,[UriKind]::Absolute,[ref]$uri) -or $data.origin -cnotmatch '^https?://' -or $uri.Scheme -notin @('http','https') -or $uri.UserInfo -ne '' -or $uri.Query -ne '' -or $uri.Fragment -ne '' -or ($uri.AbsolutePath -ne '/' -and $uri.AbsolutePath -ne '') -or $data.origin -match '[\r\n\t #?]') { throw 'Credential origin must be an HTTP or HTTPS origin without path, userinfo, query or fragment.' }
+  if (($uri.Scheme -eq 'https') -ne ($fields -like '*certificateSpkiSha256*')) { throw 'HTTPS requires a certificate pin; HTTP must not include one.' }
   if ($data.keyId -notmatch '^[A-Za-z0-9_-]{1,64}$' -or $data.clientToken -notmatch '^[A-Za-z0-9_-]{16,}$') { throw 'Invalid client credential identifiers; values withheld.' }
   try {
-    if ([Convert]::FromBase64String($data.transportKey).Length -ne 32 -or [Convert]::FromBase64String($data.policyHmacKey).Length -lt 32) { throw 'length' }
+    if ([Convert]::FromBase64String($data.transportKey).Length -ne 32) { throw 'length' }
+    if ($uri.Scheme -eq 'https' -and [Convert]::FromBase64String($data.certificateSpkiSha256).Length -ne 32) { throw 'length' }
+    if ($fields -like '*policyPublicKey*') { if ([Convert]::FromBase64String($data.policyPublicKey).Length -ne 32) { throw 'length' } }
+    elseif ([Convert]::FromBase64String($data.policyHmacKey).Length -lt 32) { throw 'length' }
   } catch { throw 'Invalid client key encoding or length; values withheld.' }
 }
 function Protect-BuildPath([string]$Path) {

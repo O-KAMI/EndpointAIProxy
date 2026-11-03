@@ -19,8 +19,8 @@ type ValidationError struct{ Code, Message string }
 func (e *ValidationError) Error() string { return e.Code + ": " + e.Message }
 func invalid(code, message string) error { return &ValidationError{code, message} }
 func ValidatePolicy(p contracts.Policy) error {
-	if p.SchemaVersion != 1 {
-		return invalid("POLICY_SCHEMA_UNSUPPORTED", "Only policy schema version 1 is supported.")
+	if p.SchemaVersion != 1 && p.SchemaVersion != 2 {
+		return invalid("POLICY_SCHEMA_UNSUPPORTED", "Only policy schema versions 1 and 2 are supported.")
 	}
 	id, e := uuid.Parse(p.ServerInstanceID)
 	if e != nil || id == uuid.Nil || p.PolicyVersion < 1 {
@@ -31,6 +31,36 @@ func ValidatePolicy(p contracts.Policy) error {
 	}
 	if _, e = NormalizeAllowlist(p.AllowlistedBaseURLs); e != nil {
 		return invalid("POLICY_ALLOWLIST_INVALID", e.Error())
+	}
+	if p.SchemaVersion == 2 {
+		if len(p.AllowlistedDomains) > 256 || len(p.RoutingRules) > 256 {
+			return invalid("POLICY_RULES_INVALID", "At most 256 domains and routing rules are supported.")
+		}
+		for _, domain := range p.AllowlistedDomains {
+			if _, e := NormalizeDomain(domain); e != nil {
+				return invalid("POLICY_ALLOWLIST_INVALID", e.Error())
+			}
+		}
+		seen := map[string]bool{}
+		for _, rule := range p.RoutingRules {
+			domain, e := NormalizeDomain(rule.Domain)
+			if e != nil || seen[domain] {
+				return invalid("POLICY_RULES_INVALID", "Routing domains must be valid and unique.")
+			}
+			seen[domain] = true
+			if rule.RouteMode == "passthroughOriginal" && rule.GatewayOrigin != nil && *rule.GatewayOrigin != "" {
+				return invalid("POLICY_RULES_INVALID", "Original-target rules cannot specify a gateway.")
+			}
+			routePolicy := p
+			routePolicy.SchemaVersion, routePolicy.RoutingRules = 1, nil
+			routePolicy.RouteMode = rule.RouteMode
+			if rule.GatewayOrigin != nil && *rule.GatewayOrigin != "" {
+				routePolicy.GatewayOrigin = rule.GatewayOrigin
+			}
+			if e := ValidatePolicy(routePolicy); e != nil {
+				return e
+			}
+		}
 	}
 	if p.RouteMode != "passthroughOriginal" && p.RouteMode != "fixedGateway" {
 		return invalid("POLICY_ROUTE_MODE_INVALID", "Unknown route mode.")
