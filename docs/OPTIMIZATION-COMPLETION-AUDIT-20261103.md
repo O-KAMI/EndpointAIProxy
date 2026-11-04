@@ -18,12 +18,12 @@
 | 策略读取不再逐台争用全局版本分配 | 同上：`policy`、`update_policy`、`_next_policy_version` | 新协议协商无状态版本；已有覆盖失效复用全局版本。旧 Go 首次 schema 2 等兼容路径仍可能分配，不能说所有读取完全无锁无写 |
 | 保留已签发版本水位，旧客户端单调性 | 同上；[恢复核对](../server/docs/RESTORE-RECONCILIATION.md) | 本机迁移、并发及恢复水位路径有验证；旧备份后的完整已签发上界仍需独立证据 |
 | 注册、更新和恢复分开，不能覆盖吊销 | 同上：`enroll`、`recover_device_credential` | 已要求原凭据证明或明确管理恢复；吊销不会因普通重注册解除。首次响应丢失与保留凭据重试已联调 |
-| 全局策略审计与本地实名角色 | [本地管理](../server/controlserver/local_admin.py)、[管理接口](../server/controlserver/routes_admin.py)及 `GLOBAL_POLICY_UPDATED` 审计 | 候选已实现；查看者、操作员、管理员有后端授权和浏览器验证；实际 HTTPS 入口与账号部署未完成 |
+| 全局策略审计与本地实名角色 | [本地管理](../server/controlserver/local_admin.py)、[管理接口](../server/controlserver/routes_admin.py)及 `GLOBAL_POLICY_UPDATED` 审计 | 2026-11-04 HTTPS 8443、本地管理员及角色已实际启用；三角色、旧 Token 拒绝、Chrome/Edge 验证通过。灰度证书需受控信任，真实策略变更等其他流程不能仅由登录验收代替 |
 | 启动错峰、周期抖动、失败退避和限流反馈 | [应用](../go-client/internal/app/app.go)：`RunControl`、`controlInterval`、`controlRetryDelayFor`；[控制通信](../go-client/internal/control/client.go) | 候选已实现；阶段独立退避，识别限流等待。集中启动及真实网络恢复尖峰仍待验 |
 | 心跳版本提示，低频完整策略核对 | 同上：`Sync` | 候选已实现；版本变化触发拉取，保留完整核对；不是已有 10 万在线实测 |
 | 轻量心跳与资产变化同步 | 同上：`lightHeartbeat`、`inventoryDigest`；数据库 `heartbeat`、`_replace_inventory` | 协商后使用，未协商仍完整上报；变化资产批量更新，事务失败回滚；混合部署和真实端侧资源仍待验 |
 | 正常日志抽样/聚合、有界维护 | [服务入口](../server/app.py)：成功累计桶、失败计数与有限样本、分钟维护 | 已有成功时延累计桶 `le50/100/200/500/1000`，无需再重复建设同类指标。内外两层不能相加，进程退出可丢未刷窗口；采集、告警尚未接入 |
-| 客户端接口与管理查询分离 | [用户服务模板](../server/deploy/endpointai-client.user.service.example)、[管理模板](../server/deploy/endpointai-admin.user.service.example)、角色隔离 | 候选已有独立角色、工作进程、连接预算和查询限流；模板未部署，共享数据库 I/O 仍可能互相影响 |
+| 客户端接口与管理查询分离 | [本地账号部署](../server/docs/LOCAL-ADMIN-GRAY-20261104.md)、角色隔离和用户服务 | 实际部署客户端 2 worker、每进程池 8，管理 1 worker、池 2，后端仅回环监听；共享数据库 I/O 和主机仍可能互相影响，混合负载门槛未验 |
 | 列表数据库分页、统计读模型 | 数据库 `analytics_page`、`analytics_filtered_page`；[汇总缓存](../server/controlserver/analytics_cache.py)、[详情缓存](../server/controlserver/analytics_detail_cache.py) | 候选已实现；查询仍有实时/快照口径。宽泛实时子串检索尚未达 2 秒建议门槛，不能计为性能验收通过 |
 | 工号、失败、版本与批次 UI | [控制台](../server/controlserver/templates/console.html)及管理接口 | 已实现并有所选 Chrome/Edge、角色与桌面/移动端验证；目标入口和所有业务状态未覆盖 |
 | “已接收/校准成功/失败/不支持/离线”口径 | [统计](../server/controlserver/analytics.py)、控制台和策略批次明细；Go `ApplyPolicy` 清除旧校准结果 | 版本匹配、成功校准和错误共同判断；离线只代表最后上报，不能当作当前在线成功 |
@@ -59,8 +59,8 @@
 ## 仍不能计为完成的边界
 
 1. 用户没有控制服务器 root；用户服务、Linger 和每小时日志任务已落地，受控重启通过。
-   主机重启、入口 TLS、本地账号激活和外部监控告警仍需完成。8 小时低负载只读观察
-   已于 2026-11-04 14:21 启动，运行中，不能代替目标规模长稳。
+   HTTPS 灰度入口和本地账号已激活，主机重启、企业证书及外部监控告警仍待验。
+   原 14:21 观察跨越部署变更而中断，新布局于 16:55 重新观察 8 小时，不能代替目标规模长稳。
 2. 独立设备私钥、硬件证明和整个状态库防回滚尚未实现；当前 DPAPI/本地文件密钥
    与设备 Token 轮换不能替代它们。不能把这些能力列为已交付。
 3. 实时宽泛搜索时延、默认批次速度、分片发生器遗漏及混合负载影响仍未关闭。

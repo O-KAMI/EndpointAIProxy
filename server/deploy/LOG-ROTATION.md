@@ -17,3 +17,7 @@
 7 份；阈值仍不是实时硬上限。新版服务 stdout/stderr 进入既有用户 journald，未更改
 主机全局 journal 配额。`Linger=yes`、服务启用和受控重启已核实，实际主机重启未执行。
 完整范围见[灰度验证](../docs/GRAY-LINUX-VALIDATION-20261104.md)。其他现场不要直接套用账号、组或路径。
+
+同日启用 HTTPS 本地账号后，新增管理进程的受限日志目录也已加入这份用户轮转配置，
+检查及任务实际执行通过；Nginx 仅记录 warn 级错误到 journal，不开启访问日志。
+配置备份及现役入口见[本地管理员启用](../docs/LOCAL-ADMIN-GRAY-20261104.md)。

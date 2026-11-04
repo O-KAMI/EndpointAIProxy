@@ -7,6 +7,9 @@
 已改为逐设备关联检查；本机隔离 MySQL 回归通过，宽泛查询仍超过建议时延门槛。
 控制台写操作已补齐本地角色限制；Chrome、Edge 与隔离 MySQL 下的三角色及工号搜索
 回归通过，完整浏览器和真实终端验收仍以当前结果记录为准。
+同日 16:42 已补齐[本地账号实际启用](server/docs/LOCAL-ADMIN-GRAY-20261104.md)：HTTPS 8443、
+旧管理 Token 入口关闭、客户端/管理后端分进程和连接预算；终端 8080 协议及凭据保留。
+原 14:21 观察已因部署变更中断，新布局 8 小时观察于 16:55 重新开始，尚未完成。
 独立 Windows/Mac 的执行矩阵、附件要求和可填写模板见
 [测试要求](docs/CLIENT-0221-TEST-REQUIREMENTS.md)及
 [测试报告模板](docs/CLIENT-0221-TEST-REPORT-TEMPLATE.md)。
