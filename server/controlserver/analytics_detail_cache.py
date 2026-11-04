@@ -33,6 +33,10 @@ def use_search_index(db, expression):
                       (expression, threshold)).fetchone() is None
 
 
+def json_search_preserves_nul(db):
+    return db.execute("SELECT hex(value) FROM json_each(?)", ('["a\\u0000b"]',)).fetchone()[0] == "610062"
+
+
 class DetailCacheWriter:
     def __init__(self, cfg, now, database, generation=None):
         cfg.DATA_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -179,12 +183,20 @@ def read_detail_cache(cfg, now, database, scope="online", os=None, skip=0, take=
             tag("allowlist-any" if key is None else "allowlist", "" if key is None else key)
         if search:
             needle = search.lower()
-            if meta.get("searchIndex") == "fts5-trigram-v1" and len(needle) >= 3 and "\x00" not in needle:
+            intact = json_search_preserves_nul(db)
+            if intact and meta.get("searchIndex") == "fts5-trigram-v1" and len(needle) >= 3 and "\x00" not in needle:
                 expression = '"' + needle.replace('"', '""') + '"'
                 if use_search_index(db, expression):
                     where.append("d.rowid IN (SELECT rowid FROM search_fts WHERE search_fts MATCH ?)")
                     params.append(expression)
-            where.append("EXISTS (SELECT 1 FROM json_each(d.searchable) WHERE instr(value,?)>0)")
+            if intact:
+                where.append("EXISTS (SELECT 1 FROM json_each(d.searchable) WHERE instr(value,?)>0)")
+            else:
+                # Older JSON1 implementations truncate decoded strings at NUL.
+                # Their FTS candidates may also be incomplete, so verify the original JSON.
+                db.create_function("search_fields_contain", 2,
+                    lambda fields, term: any(term in value for value in json.loads(fields)))
+                where.append("search_fields_contain(d.searchable,?)")
             params.append(needle)
         if employeeExact:
             where.append("d.id IN (SELECT device_id FROM tags WHERE kind=? AND value=?)")

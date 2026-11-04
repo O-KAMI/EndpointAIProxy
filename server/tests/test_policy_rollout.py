@@ -867,13 +867,14 @@ def test_policy_rollout_backup_and_restore_preserve_state(mysql_store, monkeypat
     assert policy_rollout.dispatch_one(mysql_store)
     expected = mysql_store.policy(ids[0])
     binary = Path(os.environ['ENDPOINTAI_TEST_MYSQL_BIN'])
-    archive = backup.run_backup(mysql_store.cfg, dump_binary=str(binary / 'mysqldump.exe'))
+    extension = '.exe' if os.name == 'nt' else ''
+    archive = backup.run_backup(mysql_store.cfg, dump_binary=str(binary / ('mysqldump' + extension)))
     target = 'eai_restore_' + uuid4().hex
     connection = pymysql.connect(host='127.0.0.1', port=mysql_store.cfg.MYSQL_PORT, user='root', password='', autocommit=True)
     try:
         with connection.cursor() as cur:
             cur.execute('CREATE DATABASE `' + target + '` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin')
-        backup.restore_backup(mysql_store.cfg, archive, target, str(binary / 'mysql.exe'))
+        backup.restore_backup(mysql_store.cfg, archive, target, str(binary / ('mysql' + extension)))
         restored_cfg = copy.copy(mysql_store.cfg)
         restored_cfg.MYSQL_DATABASE = target
         restored = ControlStore(restored_cfg)

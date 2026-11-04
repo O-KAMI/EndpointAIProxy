@@ -115,7 +115,7 @@ def test_schema_five_delivery_is_blocked_before_creating_files(tmp_path, monkeyp
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     target = tmp_path / "delivery"
-    with pytest.raises(RuntimeError, match="schema 3/4 to 5"):
+    with pytest.raises(RuntimeError, match="ordinary delivery is blocked"):
         module.package_delivery(target)
     assert not target.exists()
 
@@ -125,7 +125,7 @@ def test_schema_five_raw_update_is_also_blocked_before_creating_files(tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     target = tmp_path / 'new-directory' / 'update.zip'
-    with pytest.raises(RuntimeError, match='schema 3/4 to 5'):
+    with pytest.raises(RuntimeError, match='ordinary delivery is blocked'):
         module.build_release(target, update=True)
     assert not target.parent.exists()
 

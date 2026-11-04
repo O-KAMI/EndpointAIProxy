@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Candidate same-account schema 3 -> 5 upgrade; mutation remains disabled pending Linux validation."""
+"""Same-account schema 3 -> 5 upgrade; gray execution requires explicit, source-bound qualification."""
 import argparse
 from datetime import datetime, timezone
 import fcntl
@@ -27,6 +27,15 @@ base.CANDIDATES = (Path('/app/EndpointAIDLP-Server-0.1.25'),)
 base.state_path = lambda: base.NEW.parent / '.EndpointAIDLP-Server-0.1.26-upgrade.json'
 SNAPSHOT = Path(__file__).with_name('upgrade-snapshot.py')
 MUTATION_VALIDATED = False
+spec_gray = importlib.util.spec_from_file_location('gray_qualification', Path(__file__).with_name('gray_qualification.py'))
+gray = importlib.util.module_from_spec(spec_gray)
+spec_gray.loader.exec_module(gray)
+
+
+def require_mutation_validated(gray_candidate=False):
+    base.require(MUTATION_VALIDATED or gray_candidate,
+                 '尚未通过完整发行验收；默认切换动作已禁用。灰度需显式参数和匹配的 Linux 验证记录。')
+    return gray.qualified_execution(Path(__file__).parent) if gray_candidate else None
 
 
 def health(directory):
@@ -178,8 +187,10 @@ print(json.dumps({'restored':True}))
             socket_directory.cleanup()
 
 
-def downgrade_unused_schema(old):
-    base.require(MUTATION_VALIDATED, '候选升级与回退尚未通过隔离 Linux 验收；切换动作已禁用。')
+def downgrade_unused_schema(old, gray_candidate=False):
+    qualified = require_mutation_validated(gray_candidate)
+    if qualified:
+        gray.check_files(base.NEW, qualified['runtimeFiles'])
     base.require(not base.processes(base.NEW), '回退前必须停止新版。')
     previous.database(base.NEW, """from controlserver.database import SCHEMA_3_CHECKSUM
 with store.transaction() as cur:
@@ -191,9 +202,11 @@ print(json.dumps({'checked':True}))
     previous.database(old, "store.check_schema(); print(json.dumps({'schema':3}))")
 
 
-def update(archive, expected_sha256, old, mysql_bin):
-    base.require(MUTATION_VALIDATED, '候选升级与回退尚未通过隔离 Linux 验收；切换动作已禁用。')
+def update(archive, expected_sha256, old, mysql_bin, gray_candidate=False):
+    qualified = require_mutation_validated(gray_candidate)
     check_archive(archive, expected_sha256)
+    if qualified:
+        gray.check_archive(archive, qualified)
     base.require(all((mysql_bin / name).is_file() for name in ('mysqld', 'mysql', 'mysqldump')), '需要兼容 MySQL 工具目录。')
     base.require(old.is_dir() and not old.is_symlink() and old.stat().st_uid == os.getuid(), '旧目录不属于当前账户或为链接。')
     base.require(base.source_directory(old) == old, '旧目录不符合升级约束。')
@@ -219,7 +232,7 @@ def update(archive, expected_sha256, old, mysql_bin):
         if stopped:
             base.stop(base.NEW)
             try:
-                downgrade_unused_schema(old)
+                downgrade_unused_schema(old, gray_candidate)
             except Exception:
                 base.start(base.NEW)
                 raise base.DeploymentError('无法安全回退结构；已尝试恢复新版，保留备份及版本记录。') from None
@@ -237,6 +250,7 @@ def main():
     parser.add_argument('--mysql-bin', type=Path)
     parser.add_argument('--action', choices=('update', 'status', 'rollback'), default='status')
     parser.add_argument('--confirm-exclusive-database', action='store_true')
+    parser.add_argument('--gray-candidate', action='store_true', help='Use exact source qualified for an authorized gray trial; not a capacity acceptance')
     args = parser.parse_args()
     base.require(sys.platform == 'linux', '仅用于 Linux。')
     os.umask(0o077)
@@ -247,7 +261,7 @@ def main():
         return
     # Do not change this constant until the exact candidate passes isolated
     # Linux migration, backup, rollback, multi-worker and failure-injection tests.
-    base.require(MUTATION_VALIDATED, '候选升级与回退尚未通过隔离 Linux 验收；切换动作已禁用。')
+    require_mutation_validated(args.gray_candidate)
     lock_path = base.NEW.parent / '.EndpointAIDLP-Server-0.1.26-upgrade.lock'
     base.require(not lock_path.is_symlink(), '升级锁不能是符号链接。')
     with lock_path.open('a') as lock:
@@ -258,7 +272,7 @@ def main():
             was_running = bool(base.processes(base.NEW))
             base.stop(base.NEW)
             try:
-                downgrade_unused_schema(old)
+                downgrade_unused_schema(old, args.gray_candidate)
             except Exception:
                 if was_running:
                     base.start(base.NEW)
@@ -270,7 +284,7 @@ def main():
             return
         base.require(args.confirm_exclusive_database, '必须确认所有其他数据库写入者均已停止。')
         base.require(args.mysql_bin is not None, '需要兼容的 MySQL 工具目录。')
-        destination = update(args.archive, args.archive_sha256.lower(), old, args.mysql_bin)
+        destination = update(args.archive, args.archive_sha256.lower(), old, args.mysql_bin, args.gray_candidate)
         print('升级完成；备份目录：' + str(destination))
 
 

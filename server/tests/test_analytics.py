@@ -882,9 +882,12 @@ def test_explicit_snapshot_list_is_opt_in_and_never_falls_back(config):
     assert get(scope='all', snapshot='1').status_code == 503 and store.calls == 1
 
 
-def test_snapshot_trigram_search_matches_original_unicode_and_field_boundaries(config):
+@pytest.mark.parametrize('legacy_json', [False, True])
+def test_snapshot_trigram_search_matches_original_unicode_and_field_boundaries(config, monkeypatch, legacy_json):
     import sqlite3
     from controlserver.analytics_detail_cache import DetailCacheWriter, read_detail_cache
+    if legacy_json:
+        monkeypatch.setattr('controlserver.analytics_detail_cache.json_search_preserves_nul', lambda db: False)
     row = terminal('device-identity')
     row['device']['hostname'] = 'before\x00XYZ汉"字测试 😃abc'
     row['device']['employeeIds'] = ['Neo测试345']

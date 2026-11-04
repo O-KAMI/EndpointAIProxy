@@ -19,7 +19,8 @@ from controlserver.transport import b64, open_envelope, seal
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Gunicorn requires a Unix process environment")
-def test_scoped_policy_real_http_workers_and_restart(mysql_store, tmp_path):
+@pytest.mark.parametrize('policy_schema', [1, 2])
+def test_scoped_policy_real_http_workers_and_restart(mysql_store, tmp_path, policy_schema):
     cfg = mysql_store.cfg
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -42,7 +43,8 @@ def test_scoped_policy_real_http_workers_and_restart(mysql_store, tmp_path):
     def business(path, token, body=None):
         rid = str(uuid4())
         envelope = seal(cfg.TRANSPORT_KEY, cfg.TRANSPORT_KEY_ID, rid,
-            dict(method="GET" if body is None else "POST", path=path, query="", token=token,
+            dict(method="GET" if body is None else "POST", path=path,
+                query="policySchemaVersion=2&statelessPolicyVersions=1" if path.endswith('/policy') and policy_schema == 2 else "", token=token,
                 body=b64(b"" if body is None else json.dumps(body).encode())), "request")
         status, raw = http("/api/transport/v1", "POST", envelope, token="unused-outer-token")
         assert status == 200
@@ -52,6 +54,14 @@ def test_scoped_policy_real_http_workers_and_restart(mysql_store, tmp_path):
         if path.endswith("/policy"):
             assert response["headers"]["X-SF-Policy-Signature"] == sign_policy(body_raw, cfg.POLICY_HMAC_KEY)
         return json.loads(body_raw)
+
+    def wire_policy(policy):
+        result = dict(policy, schemaVersion=policy_schema)
+        result.pop('allowlistMigration', None)
+        if policy_schema == 1:
+            result.pop('allowlistedDomains', None)
+            result.pop('routingRules', None)
+        return result
 
     env = dict(os.environ, APP_ENV="prd", APP_CONFIG=str(tmp_path / "conf"),
         SF_CONTROL_HTTP_HOST="127.0.0.1", SF_CONTROL_HTTP_PORT=str(port),
@@ -93,20 +103,20 @@ def test_scoped_policy_real_http_workers_and_restart(mysql_store, tmp_path):
         assert sorted(status for status, _ in results) == [200, 409, 409, 409]
         scoped = json.loads(next(raw for status, raw in results if status == 200))["effectivePolicy"]
         query = lambda device: business("/api/v2/devices/" + device["deviceId"] + "/policy", device["deviceToken"])
-        assert query(target) == scoped
-        assert query(other) == global_policy
+        assert query(target) == wire_policy(scoped)
+        assert query(other) == wire_policy(global_policy)
         assert json.loads(http("/admin/v1/policy")[1]) == global_policy
         process.terminate()
         process.wait(timeout=30)
         start()
-        assert query(target) == scoped
+        assert query(target) == wire_policy(scoped)
         status, raw = http(path, "DELETE", {"expectedVersion": scoped["policyVersion"]})
         assert status == 200
         reset = json.loads(raw)
         assert not reset["hasOverride"]
         assert reset["effectivePolicy"]["policyVersion"] > scoped["policyVersion"]
-        assert query(target) == reset["effectivePolicy"]
-        assert query(other) == global_policy
+        assert query(target) == wire_policy(reset["effectivePolicy"])
+        assert query(other) == wire_policy(global_policy)
         assert json.loads(http("/admin/v1/policy")[1]) == global_policy
     finally:
         if process is not None and process.poll() is None:

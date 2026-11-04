@@ -1,0 +1,26 @@
+# Site-specific ordinary account: appdeploy, primary group mwopr.
+# Do not install alongside another rotation rule covering these paths.
+/app/EndpointAIDLP-Server-*/logs/app.log {
+    daily
+    maxsize 20M
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0600 appdeploy mwopr
+    su appdeploy mwopr
+}
+
+# Retained unmanaged versions used an inherited console descriptor.
+/app/EndpointAIDLP-Server-*/console.log {
+    daily
+    maxsize 20M
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su appdeploy mwopr
+}

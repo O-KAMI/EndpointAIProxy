@@ -24,6 +24,8 @@ def updater():
 
 def test_downgrade_refuses_any_issued_device_version(mysql_store, monkeypatch):
     update = updater()
+    import controlserver.database as database
+    mysql_store.revert_unused_rollout_schema()
     from uuid import uuid4
     device = mysql_store.enroll(DeviceEnrollmentRequest(schemaVersion=2, deviceId=uuid4(),
         hostname="synthetic", serviceVersion="0.2.3"))["deviceId"]
@@ -31,10 +33,14 @@ def test_downgrade_refuses_any_issued_device_version(mysql_store, monkeypatch):
         expectedVersion=mysql_store.policy()["policyVersion"], overrides={"allowlistedBaseUrls":[]}), "test")
     monkeypatch.setattr(update.base, "processes", lambda _: {})
     def execute(_, operation, env=None):
-        exec(operation, {"store": mysql_store, "json": json})
+        # The legacy helper runs against schema-3 code, not this candidate's schema-5 checksum.
+        with monkeypatch.context() as legacy:
+            legacy.setattr(database, 'schema_checksum', lambda: database.SCHEMA_3_CHECKSUM)
+            exec(operation, {"store": mysql_store, "json": json})
     monkeypatch.setattr(update, "database", execute)
     with pytest.raises(AssertionError, match="Scoped versions exist"):
         update.downgrade_unused_schema()
+    mysql_store.migrate()
     mysql_store.check_schema()
     assert mysql_store.policy(device) == scoped["effectivePolicy"]
 
@@ -100,17 +106,17 @@ def test_failed_upgrade_restarts_new_when_downgrade_is_unsafe(tmp_path, monkeypa
 
 def test_real_stopped_backup_restore_clone_migration_and_unused_rollback(mysql_store, tmp_path, monkeypatch):
     baseline = os.environ.get("ENDPOINTAI_TEST_BASELINE024")
+    baseline025 = os.environ.get("ENDPOINTAI_TEST_BASELINE025")
     binary = os.environ.get("ENDPOINTAI_TEST_MYSQL_BIN")
-    if not baseline or not binary:
-        pytest.skip("Exact public 0.1.24 baseline and isolated MySQL tools required")
+    if not baseline or not baseline025 or not binary:
+        pytest.skip("Exact public 0.1.24/0.1.25 baselines and isolated MySQL tools required")
     update = updater()
     old, new = tmp_path / "old024", tmp_path / "new025"
     shutil.copytree(baseline, old, ignore=shutil.ignore_patterns("__pycache__", ".venv", "deployment", "artifacts", "logs", "var"))
-    shutil.copytree(ROOT, new, ignore=shutil.ignore_patterns("__pycache__", ".venv", ".pytest_cache", "deployment", "artifacts", "logs", "var"))
+    shutil.copytree(baseline025, new, ignore=shutil.ignore_patterns("__pycache__", ".venv", ".pytest_cache", "deployment", "artifacts", "logs", "var"))
     cfg = mysql_store.cfg
     for directory in (old, new):
-        (directory / ".venv/bin").mkdir(parents=True)
-        (directory / ".venv/bin/python").symlink_to(sys.executable)
+        (directory / ".venv").symlink_to(sys.prefix, target_is_directory=True)
         values = dict(APP_ENV="sit",APP_CONFIG=str(directory / "conf"),
             SF_CONTROL_CLIENT_TOKEN=cfg.CLIENT_TOKEN,SF_CONTROL_ADMIN_TOKEN=cfg.ADMIN_TOKEN,
             SF_CONTROL_POLICY_HMAC_KEY=cfg.HMAC_TEXT,SF_CONTROL_TRANSPORT_KEY=cfg.TRANSPORT_KEY_TEXT,
@@ -122,6 +128,7 @@ def test_real_stopped_backup_restore_clone_migration_and_unused_rollback(mysql_s
         path.write_text(json.dumps(values)); path.chmod(0o600)
     monkeypatch.setattr(update.base,"NEW",new)
     # Start from schema 2 without dropping or restoring any business table.
+    mysql_store.revert_unused_rollout_schema()
     update.downgrade_unused_schema()
     before = update.snapshot(old)
     destination, archive = update.stopped_backup(old, Path(binary))

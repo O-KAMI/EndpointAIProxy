@@ -1,0 +1,10 @@
+[Unit]
+Description=Check EndpointAIDLP gray log budgets hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Unit=endpointai-gray-logrotate.service
+
+[Install]
+WantedBy=timers.target

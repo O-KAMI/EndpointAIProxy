@@ -2,6 +2,7 @@
 import argparse
 from email.parser import BytesParser
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -13,9 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 RELEASE_VERSION = "0.1.26"
 
 
-def require_update_validated():
+def require_update_validated(gray_candidate=False):
     if RELEASE_VERSION == "0.1.26":
-        raise RuntimeError("0.1.26 delivery is blocked until the schema 3/4 to 5 upgrade and rollback procedures are validated on an isolated Linux host")
+        if not gray_candidate:
+            raise RuntimeError("0.1.26 ordinary delivery is blocked; gray delivery requires explicit opt-in and matching native qualification")
+        deployment = ROOT.parent / 'deployment'
+        spec = importlib.util.spec_from_file_location('gray_release_qualification', deployment / 'gray_qualification.py')
+        gray = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gray)
+        gray.qualified_source(ROOT, deployment)
 
 
 def offline_wheels():
@@ -91,9 +98,9 @@ def release_files():
     return paths
 
 
-def build_release(output, update=False):
+def build_release(output, update=False, gray_candidate=False):
     if update:
-        require_update_validated()
+        require_update_validated(True) if gray_candidate else require_update_validated()
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     files = release_files()
@@ -121,8 +128,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
     parser.add_argument("--update", action="store_true", help="Include locked Linux offline wheels and per-file manifest")
+    parser.add_argument('--gray-candidate', action='store_true', help='Build an explicitly qualified gray update; ordinary 0.1.26 delivery remains blocked')
     args = parser.parse_args()
-    count, digest = build_release(args.output, args.update)
+    count, digest = build_release(args.output, args.update, args.gray_candidate)
     output = Path(args.output)
     print(f"Packaged {count} source files: {output}")
     print("SHA256: " + digest)

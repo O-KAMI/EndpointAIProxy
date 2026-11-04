@@ -34,14 +34,14 @@ def test_unvalidated_mutations_are_blocked_before_process_operations(candidate, 
     monkeypatch.setattr(candidate.os, 'umask', lambda mask: None)
     monkeypatch.setattr(candidate.sys, 'argv', ['updater', '--action', action])
     monkeypatch.setattr(candidate.base, 'processes', lambda path: pytest.fail('unexpected process operation'))
-    with pytest.raises(candidate.base.DeploymentError, match='尚未通过隔离 Linux 验收'):
+    with pytest.raises(candidate.base.DeploymentError, match='默认切换动作已禁用'):
         candidate.main()
 
 
 def test_internal_mutation_entrypoints_are_also_guarded(candidate):
-    with pytest.raises(candidate.base.DeploymentError, match='尚未通过隔离 Linux 验收'):
+    with pytest.raises(candidate.base.DeploymentError, match='默认切换动作已禁用'):
         candidate.update(None, '', None, None)
-    with pytest.raises(candidate.base.DeploymentError, match='尚未通过隔离 Linux 验收'):
+    with pytest.raises(candidate.base.DeploymentError, match='默认切换动作已禁用'):
         candidate.downgrade_unused_schema(None)
 
 

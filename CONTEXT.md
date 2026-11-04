@@ -1,6 +1,8 @@
 # EndpointAIProxy 项目地图
 
-2026-11-04 文档同步，最近本机验证日期为 2026-11-03。当前优化实现、交付包摘要和未通过的门禁统一见
+2026-11-04 已完成授权灰度控制端升级至 0.1.26/schema 5；原生 Linux 回归、最终包演练、
+实际备份恢复和切换范围见[灰度验证记录](server/docs/GRAY-LINUX-VALIDATION-20261104.md)。
+当前优化实现、交付包摘要和未通过的门禁统一见
 [当前交付结果](docs/OPTIMIZATION-CURRENT-RESULT.md)。启用工号派生表时的实时搜索
 已改为逐设备关联检查；本机隔离 MySQL 回归通过，宽泛查询仍超过建议时延门槛。
 控制台写操作已补齐本地角色限制；Chrome、Edge 与隔离 MySQL 下的三角色及工号搜索
@@ -24,14 +26,15 @@ schema 6 激活后禁止直接降回 r75 或更早程序，旧客户端无法恢
 该增量不包含在 0.2.20，r77 控制端源码不变；逐项实现与验收边界见
 [完成度核对](docs/OPTIMIZATION-COMPLETION-AUDIT-20261103.md)。
 
-当前全目标验收受隔离 Linux、独立终端结果及部署设施证据阻断；最终包和构建输入已再次
+当前全目标验收仍缺目标混合负载、8 小时、独立终端及部署设施证据；最终包和构建输入已再次
 核对。外部条件以[完成度核对](docs/OPTIMIZATION-COMPLETION-AUDIT-20261103.md)为准；
 本机私有证据另存 `private/acceptance/final-blocker-audit-20261103.md`，不随 Git 分发。
 不把历史单测、交叉编译或本机实验替代原生与容量门禁。
 
-2026-11-04 用户追加授权在现有灰度 Linux 控制服务器受控升级与测试，并由用户输入
-堡垒机口令；执行前先验证备份恢复、独立副本迁移及恢复路径。当前会话缺少 i-jumper
-远程工具入口，尚未连接或变更服务器，不能据授权把上述 Linux 门禁标为通过。
+2026-11-04 使用项目已配置的 i-jumper MCP 完成普通账号运维；用户确认只有该服务写库。
+Linux 完整回归 537 通过、39 跳过，最终更新包两项升级/回退及启动失败恢复演练通过。
+实际停服备份恢复、原业务摘要核对和索引维护通过；schema 6、凭据轮换及新传输未启用。
+这不表示目标规模、8 小时或所有 Linux 故障通过；托管和入口设施分别以灰度记录为准。
 
 ## 历史进度与模块入口
 
@@ -99,8 +102,8 @@ r14 辅助维护仍失败；进一步补齐 Desktop 引用范围与通用 Node �
 |---|---|---|
 | Go 客户端 0.2.21 r2 | Win/Mac 共用核心的候选实现，原生发行和长稳待验 | [Go 模块](go-client/go.mod)、[当前交付结果](docs/OPTIMIZATION-CURRENT-RESULT.md)、[完成度核对](docs/OPTIMIZATION-COMPLETION-AUDIT-20261103.md) |
 | .NET 客户端 0.1.22 | 兼容基线与回退实现；不能因 Go 候选存在而删除 | [客户端项目](src/Sf.EndpointAI.Client.Service/Sf.EndpointAI.Client.Service.csproj)、[原 MSI](installer/Sf.EndpointAI.Setup/Package.wxs) |
-| Python 服务端 0.1.25 / schema 3 | 生产控制面：Flask/Gunicorn、MySQL；单终端覆盖已部署并完成本机现场验收 | [服务端说明](server/README.md)、[入口](server/app.py)、[升级流程](deployment/README-SERVER-UPGRADE-0.1.25.md) |
-| Python 服务端 0.1.26 r77 | 未部署的隔离源码候选；默认 schema 5，轮换需显式启用 schema 6；Linux 和容量门禁待验 | [当前交付结果](docs/OPTIMIZATION-CURRENT-RESULT.md)、[轮换边界](server/docs/CREDENTIAL-ROTATION-CANDIDATE.md) |
+| Python 服务端 0.1.26 / schema 5 | 当前授权灰度控制面；原生测试、备份恢复、切换及索引维护通过，容量和长稳待验 | [灰度记录](server/docs/GRAY-LINUX-VALIDATION-20261104.md)、[升级边界](deployment/README-SERVER-UPGRADE-0.1.26.md) |
+| Python 服务端历史 r77 源码 | 不含随后 Linux 搜索修复及显式灰度路径；可选 schema 6 仍未启用 | [当前交付结果](docs/OPTIMIZATION-CURRENT-RESULT.md)、[轮换边界](server/docs/CREDENTIAL-ROTATION-CANDIDATE.md) |
 | ASP.NET 控制服务 | 保留的独立原型，不等同于生产 Python 服务端 | [原型源码](src/Sf.EndpointAI.ControlServer) |
 
 不要混用客户端版本、服务端版本或测试包版本。源码工作树、构建清单、最终程序哈希和交付 ZIP 可能处于不同阶段；不得只依据文件名认定内容一致。

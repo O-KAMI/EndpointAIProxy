@@ -1,0 +1,24 @@
+# Linux x86_64 0.1.26 gray deployment; start.py loads private launch-env.json.
+# Install as ~/.config/systemd/user/endpointai-gray.service after stopping the
+# unmanaged controller. Requires verified user lingering for logout survival.
+[Unit]
+Description=EndpointAIDLP gray control service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/app/EndpointAIDLP-Server-0.1.26
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/app/EndpointAIDLP-Server-0.1.26/.venv/bin/python /app/EndpointAIDLP-Server-0.1.26/start.py --check
+ExecStart=/app/EndpointAIDLP-Server-0.1.26/.venv/bin/python /app/EndpointAIDLP-Server-0.1.26/start.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=75
+UMask=0077
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

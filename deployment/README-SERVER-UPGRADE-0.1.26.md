@@ -1,9 +1,27 @@
-# 0.1.26 控制端升级候选：尚不可执行切换
+# 0.1.26 控制端：受限灰度升级候选
 
-本目录的升级器是待验证的候选实现，不是发行包。`MUTATION_VALIDATED` 固定为
-`False`，更新和回退入口都会拒绝执行；打包脚本也会拒绝生成 0.1.26 交付包。
-只有在隔离 Linux 环境完成真实备份、恢复、升级、回退及故障注入后，才能审查并解除这些阻断。
-不要在生产环境修改标志来绕过门禁。
+普通发行路径仍保留 `MUTATION_VALIDATED=False`，默认更新、回退及更新包构建被拒绝。
+2026-11-04 用户授权在现有灰度服务器受控升级；同机独立数据库和端口完成了 x86_64
+原生离线依赖安装、schema 3 备份恢复及迁移、新旧 HTTP 服务、回退和启动失败恢复。
+这些小样本验证不代表 10 万在线、8 小时长稳或高可用通过。
+
+显式 `--gray-candidate` 路径要求 `gray-upgrade-0.1.26.json`：运行源码、升级器和公共
+辅助模块必须匹配记录摘要，执行平台必须是已验证的 Linux x86_64。打包和实际切换均
+重新校验，源码改变或材料缺失即拒绝；不能通过将普通门禁改为 True 放行。
+新门禁与最终灰度材料须复验后才执行真实切换；当前状态见
+[灰度验证记录](../server/docs/GRAY-LINUX-VALIDATION-20261104.md)。
+
+受限构建和执行入口（占位值须独立核对，不能直接复制执行）：
+
+```sh
+python server/tools/package_delivery.py --gray-candidate --output-dir '<新的受限输出目录>'
+<旧服务目录>/.venv/bin/python update-server-0.1.26.py --action update --gray-candidate \
+  --archive '<受信任更新包路径>' --archive-sha256 '<独立核对的 SHA-256>' \
+  --mysql-bin '<兼容 MySQL 工具目录>' --confirm-exclusive-database
+```
+
+`--confirm-exclusive-database` 必须建立在其他写入者已停止的现场核查上，不能只为通过
+参数校验而填写。回退同样需要显式 `--gray-candidate`，并继续受无批次数据等原限制约束。
 
 Linux 指控制服务所在服务器的操作系统，与 Windows、Mac 客户端无关。候选流程使用
 运行服务的普通账号，不要求服务器 root 或系统级 systemd 操作；它只覆盖现有由该账号

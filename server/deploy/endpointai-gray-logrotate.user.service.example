@@ -1,0 +1,8 @@
+[Unit]
+Description=Rotate EndpointAIDLP gray application logs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate --state %h/.local/state/endpointai-gray/logrotate.state %h/.config/endpointai-gray/logrotate.conf
+UMask=0077
+NoNewPrivileges=true
