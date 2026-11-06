@@ -23,7 +23,18 @@ def response(value=None, status=200):
 def parse(model, code):
     try:
         return model.model_validate(request.get_json())
-    except (ValidationError, BadRequest, UnsupportedMediaType, ValueError):
+    except ValidationError as exc:
+        # Never serialize pydantic's input/ctx: both may contain credentials.
+        details = []
+        for error in exc.errors(include_input=False, include_context=False, include_url=False)[:20]:
+            fields = {"expectedVersion", "overrides", "enabled", "routeMode", "gatewayOrigin", "allowInsecureGateway", "pollIntervalSeconds", "heartbeatIntervalSeconds", "allowlistedDomains", "allowlistedBaseUrls", "routingRules", "domain"}
+            path = ".".join(str(p) if isinstance(p, int) or p in fields else "*" for p in error["loc"])
+            detail = {"field": path, "reason": error["type"]}
+            if error["type"] == "enum" and path.endswith("routeMode"):
+                detail["allowedValues"] = ["passthroughOriginal", "fixedGateway"]
+            details.append(detail)
+        raise ApiProblem(code, "The request body is invalid.", details=details) from None
+    except (BadRequest, UnsupportedMediaType, ValueError):
         raise ApiProblem(code, "The request body is invalid.") from None
 
 

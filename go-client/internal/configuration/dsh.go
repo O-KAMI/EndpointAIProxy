@@ -283,8 +283,6 @@ func dshDocuments(p Profile) ([]*dshDocument, error) {
 				doc.issue = "DSH_COMMAND_OVERLAY_UNKNOWN"
 			case homeIssue != "":
 				doc.issue = homeIssue
-			case p.DSHVersion != DSHSupportedVersion:
-				doc.issue = "DSH_VERSION_UNVERIFIED"
 			case !manifestKnown:
 				doc.issue = "DSH_PROFILE_MANIFEST_UNSUPPORTED"
 			}
@@ -362,6 +360,14 @@ func dshFindCandidates(p Profile, doc *dshDocument) []dshCandidate {
 				} else if !dshValidURL(current) {
 					problemCode = "DSH_BASE_URL_UNSUPPORTED"
 				}
+				// Explicit models may still resolve to the built-in catalog. Until
+				// catalog and inference origins are independent, do not redirect
+				// the official API-key provider based on field presence alone.
+				if role == "deepseek" {
+					if u, err := url.Parse(current); err == nil && strings.EqualFold(u.Hostname(), "api.deepseek.com") {
+						problemCode = "DSH_DYNAMIC_MODEL_CATALOG_UNSUPPORTED"
+					}
+				}
 				out = append(out, dshCandidate{identity: dshIdentity(p, doc.root, doc.profile, id, provider, proto, role), protocol: proto, role: role, current: current, urlNode: v, issue: problemCode})
 			}
 			if role == "account" {
@@ -395,7 +401,11 @@ func dshFindCandidates(p Profile, doc *dshDocument) []dshCandidate {
 					extra = "DSH_PROTOCOL_UNSUPPORTED"
 				} else {
 					extra = dshCustomCompatible(provider, cfg)
-					if p.DSHPiAIVersion != "1.3.0" {
+					sdk := p.DSHPiAIVersion
+					if p.DSHProfileSDKVersions != nil {
+						sdk = p.DSHProfileSDKVersions[filepath.Dir(doc.path)]
+					}
+					if sdk != "1.3.0" {
 						extra = "DSH_PI_AI_VERSION_UNVERIFIED"
 					}
 				}
@@ -458,14 +468,33 @@ func (m *Manager) dshProfile(ctx context.Context, p Profile, detach bool) ([]Res
 		return nil, retireErr
 	}
 	for _, doc := range docs {
-		if doc.profile == "desktop" && (contracts.DSHDesktopAccountVersionSupported(p.DSHVersion) || detach && m.hasAccountJournal(p, doc)) {
+		if dshMissingDefaultProvider(doc) && !detach {
+			results = append(results, Result{SID: p.SID, Path: doc.path, AgentType: dshAgent, ProviderID: dshIdentity(p, doc.root, doc.profile, "llm-deepseek", "", "messages", "deepseek"), Mode: "unsupported", Ownership: "direct", Status: 5, ErrorCode: "DSH_DEFAULT_PROVIDER_UNVERIFIED"})
+		}
+		accountHandled := doc.profile == "desktop"
+		if accountHandled {
 			rs, err := m.dshAccountProfile(ctx, p, doc, detach)
 			results = append(results, rs...)
 			if err != nil {
 				scanIncomplete = true
 				errs = append(errs, err)
 			}
-			continue
+			// The account adapter does not own API-key/custom providers in the
+			// same profile. Re-read after its CAS write before planning those.
+			if err != nil {
+				continue
+			}
+			if doc.bytes, err = dshRead(doc.path); err != nil {
+				errs = append(errs, err)
+				scanIncomplete = true
+				continue
+			}
+			if err = dshParse(doc.bytes, &doc.tree); err != nil {
+				errs = append(errs, err)
+				scanIncomplete = true
+				continue
+			}
+			doc.candidates = dshFindCandidates(p, doc)
 		}
 		if len(doc.candidates) == 0 {
 			if doc.issue != "" {
@@ -477,6 +506,9 @@ func (m *Manager) dshProfile(ctx context.Context, p Profile, detach bool) ([]Res
 		var nodes []*yaml.Node
 		var previous []string
 		for _, c := range doc.candidates {
+			if accountHandled && c.role == "account" {
+				continue
+			}
 			r := Result{SID: p.SID, Path: doc.path, ProviderID: c.identity, AgentType: dshAgent, Mode: "ordinary", Ownership: "direct", Status: 2}
 			issue := c.issue
 			if doc.issue != "" {
@@ -692,7 +724,11 @@ func (m *Manager) inspectDSHWithRoutes(ctx context.Context, profiles []Profile, 
 			errs = append(errs, e)
 		}
 		for _, doc := range docs {
-			if doc.profile == "desktop" && (contracts.DSHDesktopAccountVersionSupported(p.DSHVersion) || m.hasAccountJournal(p, doc)) {
+			if dshMissingDefaultProvider(doc) {
+				out = append(out, Endpoint{SID: p.SID, Family: "deepseekHarness", ProviderID: dshIdentity(p, doc.root, doc.profile, "llm-deepseek", "", "messages", "deepseek"), Mode: "unsupported", Source: 1, Current: true, RouteStatus: 5, ErrorCode: "DSH_DEFAULT_PROVIDER_UNVERIFIED"})
+			}
+			accountHandled := doc.profile == "desktop"
+			if accountHandled {
 				identity := dshIdentity(p, doc.root, doc.profile, "llm-deepseek-account", "", "messages", "account")
 				asset := Endpoint{SID: p.SID, Family: "deepseekHarness", ProviderID: identity, Mode: "unsupported", Source: 1, Current: true, RouteStatus: 5}
 				if p.DSHDesktopAccountVerified && len(doc.tree.Content) > 0 {
@@ -707,24 +743,45 @@ func (m *Manager) inspectDSHWithRoutes(ctx context.Context, profiles []Profile, 
 					}
 				}
 				out = append(out, asset)
-				continue
 			}
 			if len(doc.candidates) == 0 && doc.issue != "" {
 				out = append(out, Endpoint{SID: p.SID, Family: "deepseekHarness", ProviderID: dshIdentity(p, doc.root, doc.profile, "unsupported", "", "unknown", "custom"), Mode: "unsupported", Source: 1, RouteStatus: 5})
 				continue
 			}
 			for _, c := range doc.candidates {
+				if accountHandled && c.role == "account" {
+					continue
+				}
 				mode := "ordinary"
 				if c.issue != "" || doc.issue != "" {
 					mode = "unsupported"
 				}
 				asset := m.inspectEndpoint(p, "deepseekHarness", c.identity, c.current, mode, 1, true, dshAgent, routes)
 				asset.Model = c.model
+				asset.ErrorCode = c.issue
+				if doc.issue != "" {
+					asset.ErrorCode = doc.issue
+				}
 				out = append(out, asset)
 			}
 		}
 	}
 	return out, errors.Join(errs...)
+}
+
+// An empty user patch is not an empty effective profile: dsh-base supplies the
+// default API-key provider. We cannot safely redirect its dynamic catalog or an
+// unknown launch-environment endpoint by inventing a baseURL override.
+func dshMissingDefaultProvider(doc *dshDocument) bool {
+	if len(doc.tree.Content) == 0 || !dshManifest(filepath.Join(filepath.Dir(doc.path), "package.json")) {
+		return false
+	}
+	for _, candidate := range doc.candidates {
+		if candidate.role == "deepseek" {
+			return false
+		}
+	}
+	return true
 }
 
 type dshRootJournal struct {

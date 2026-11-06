@@ -24,7 +24,7 @@ func newUserIDCache(limit, parallel int) *userIDCache {
 }
 
 // resolve has no operating-system calls, allocation or background scheduling.
-// A miss preserves the existing failed-lookup fallback to the original SID.
+// A miss is unknown; an unresolved SID is never a user account.
 func (c *userIDCache) resolve(sid string) string {
 	c.mu.RLock()
 	entry, ok := c.entries[sid]
@@ -32,7 +32,7 @@ func (c *userIDCache) resolve(sid string) string {
 	if ok && entry.value != "" {
 		return entry.value
 	}
-	return sid
+	return ""
 }
 
 // At most parallel lookups can be outstanding, even when the native resolver
@@ -74,7 +74,7 @@ func (c *userIDCache) refresh(ctx context.Context, sids []string, lookup func(st
 			}
 			ttl := time.Hour
 			if err != nil || value == "" {
-				value = sid
+				value = ""
 				ttl = time.Minute
 			}
 			if _, exists := c.entries[sid]; !exists && len(c.entries) >= c.limit {
@@ -88,7 +88,7 @@ func (c *userIDCache) refresh(ctx context.Context, sids []string, lookup func(st
 				delete(c.entries, oldest)
 			}
 			now := time.Now()
-			c.entries[sid] = userIDEntry{value: value, refreshed: now, refreshAfter: now.Add(ttl)}
+			c.entries[sid] = userIDEntry{value: ShortAccountName(value), refreshed: now, refreshAfter: now.Add(ttl)}
 		}(sid)
 	}
 }

@@ -158,6 +158,9 @@ func parse(args []string) (options, error) {
 	}
 	opts.management = strings.EqualFold(os.Getenv("SF_PROXY_ENABLE_MANAGEMENT_API"), "true")
 	opts.managementToken = os.Getenv("SF_PROXY_MANAGEMENT_TOKEN")
+	if opts.management && (!opts.development || opts.profileRoot == "") {
+		return opts, errors.New("MANAGEMENT_REQUIRES_ISOLATED_PROFILE")
+	}
 	if id, e := uuid.Parse(os.Getenv("SF_PROXY_DEVICE_ID")); e == nil {
 		opts.app.GatewayDeviceID = id.String()
 	}

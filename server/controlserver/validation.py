@@ -12,13 +12,20 @@ CCR_BASE_URL = "https://claudecode.sf-express.com/ccr"
 
 
 class ApiProblem(Exception):
-    def __init__(self, code, message, status=400):
+    def __init__(self, code, message, status=400, details=None):
         self.code, self.message, self.status = code, message, status
+        self.details = details
         super().__init__(code)
 
 
-def fail(code, message):
-    raise ApiProblem(code, message)
+def fail(code, message, field=None, allowed_values=None):
+    details = None
+    if field:
+        detail = {"field": field, "reason": "value_error"}
+        if allowed_values is not None:
+            detail["allowedValues"] = allowed_values
+        details = [detail]
+    raise ApiProblem(code, message, details=details)
 
 
 def normalize_base_url(value):
@@ -146,31 +153,36 @@ def normalize_routing_rules(rules):
 
 
 def validate_policy(update):
-    if (update.expectedVersion < 1 or update.expectedVersion >= 2**63 - 1
-            or not 15 <= update.pollIntervalSeconds <= 3600
-            or not 15 <= update.heartbeatIntervalSeconds <= 3600):
-        fail("POLICY_FIELDS_INVALID", "Policy version and intervals are outside the accepted range.")
+    for field, minimum, maximum in (("expectedVersion", 1, 2**63 - 2),
+                                    ("pollIntervalSeconds", 15, 3600),
+                                    ("heartbeatIntervalSeconds", 15, 3600)):
+        if not minimum <= getattr(update, field) <= maximum:
+            fail("POLICY_FIELDS_INVALID", "Policy version and intervals are outside the accepted range.", field)
     if update.allowlistedBaseUrls is not None:
         try:
             normalize_allowlist(update.allowlistedBaseUrls)
-        except ValueError as exc:
-            fail("POLICY_ALLOWLIST_INVALID", str(exc))
+        except ValueError:
+            fail("POLICY_ALLOWLIST_INVALID", "The Base URL allowlist contains an invalid entry or exceeds the accepted limit.", "allowlistedBaseUrls")
     try:
+        field = "allowlistedDomains"
         if update.allowlistedDomains is not None:
             normalize_domains(update.allowlistedDomains)
+        field = "routingRules"
         rules = normalize_routing_rules(update.routingRules or [])
-    except ValueError as exc:
-        fail("POLICY_RULES_INVALID", str(exc))
+    except ValueError:
+        fail("POLICY_RULES_INVALID", "Policy domains or routing rules are invalid, duplicated or exceed the accepted limit.", field)
     if update.routeMode == RouteMode.FixedGateway:
         validate_gateway(update.gatewayOrigin, update.allowInsecureGateway)
-    for rule in rules:
+    for index, rule in enumerate(rules):
         if rule["routeMode"] == RouteMode.FixedGateway:
-            validate_gateway(rule["gatewayOrigin"] or update.gatewayOrigin, update.allowInsecureGateway)
+            validate_gateway(rule["gatewayOrigin"] or update.gatewayOrigin, update.allowInsecureGateway,
+                             f"routingRules.{index}.gatewayOrigin")
         elif rule["gatewayOrigin"]:
-            fail("POLICY_RULES_INVALID", "Original-target rules cannot specify a gateway.")
+            fail("POLICY_RULES_INVALID", "Original-target rules cannot specify a gateway.",
+                 f"routingRules.{index}.gatewayOrigin")
 
 
-def validate_gateway(origin, allow_http):
+def validate_gateway(origin, allow_http, field="gatewayOrigin"):
     try:
         uri = urlsplit(origin or "")
         valid = (uri.scheme.lower() == "https" or (allow_http and uri.scheme.lower() == "http"))
@@ -183,7 +195,7 @@ def validate_gateway(origin, allow_http):
     except ValueError:
         valid = False
     if not valid:
-        fail("POLICY_GATEWAY_INVALID", "Fixed gateway mode requires a valid origin; HTTP must be explicitly allowed.")
+        fail("POLICY_GATEWAY_INVALID", "Fixed gateway mode requires a valid origin; HTTP must be explicitly allowed.", field)
 
 
 def seed_policy(cfg):

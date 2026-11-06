@@ -66,6 +66,9 @@ type App struct {
 	lastControl, lastReconcile                                    *time.Time
 	lastControlError, lastReconcileError, lastReconcileResult     *string
 	activity                                                      map[string]contracts.ProxyActivityAsset
+	inference                                                     map[string]inferenceObservation
+	reloadRequired                                                map[string]bool
+	configurationChangedAt                                        map[string]time.Time
 	events                                                        []contracts.EndpointEvent
 	eventsLoaded                                                  bool
 	reconcile                                                     chan struct{}
@@ -148,6 +151,9 @@ func New(ctx context.Context, opts Options, store *state.Store, logs *audit.Stor
 	if err := a.restorePendingEvents(ctx); err != nil {
 		logs.Log("EVENT_QUEUE_READ_FAILED", map[string]any{"errorCode": "EVENT_QUEUE_UNAVAILABLE"})
 	}
+	a.inference = make(map[string]inferenceObservation)
+	a.reloadRequired = make(map[string]bool)
+	a.configurationChangedAt = make(map[string]time.Time)
 	a.proxySlots = make(chan struct{}, 64)
 	if opts.Control != nil {
 		a.Client, e = control.New(*opts.Control)
@@ -310,6 +316,7 @@ func (a *App) ApplyPolicy(ctx context.Context, p contracts.Policy, sig string, a
 		p.GatewayOrigin = ptr(*p.GatewayOrigin)
 	}
 	a.policy = p
+	a.inference = make(map[string]inferenceObservation)
 	a.allowlist = compileAllowlist(p)
 	version := p.PolicyVersion
 	a.policyState = contracts.PolicyClientState{AppliedSchemaVersion: p.SchemaVersion, LastReceivedVersion: &version, AppliedVersion: &version, ApplyStatus: contracts.PolicyApplyStatusApplied}
@@ -367,6 +374,7 @@ func PrepareConfigurationProfiles(ctx context.Context, m *configuration.Manager,
 		meta, ok := metadata[out[i].SID]
 		out[i].DSHVersion = meta.Version
 		out[i].DSHPiAIVersion = meta.DSHPiAIVersion
+		out[i].DSHProfileSDKVersions = meta.ProfileSDKVersions
 		out[i].DSHDesktopAccountVerified = meta.DesktopAccountVerified
 		out[i].DSHDesktopReferencesVerified = meta.DesktopReferencesVerified
 		out[i].DSHOverlaysUnknown = !ok || meta.OverlaysUnknown
@@ -451,7 +459,9 @@ func (a *App) Reconcile(ctx context.Context) error {
 		}
 	}
 	failed := e != nil
+	partial := false
 	for _, r := range results {
+		partial = partial || r.AgentType == 11 && r.Status == int(contracts.RouteStatusUnsupported)
 		if r.ErrorCode != "" && r.Status != int(contracts.RouteStatusUnsupported) {
 			failed = true
 		}
@@ -460,7 +470,12 @@ func (a *App) Reconcile(ctx context.Context) error {
 	a.mu.Lock()
 	a.lastReconcile = &now
 	a.lastReconcileResult = ptr("completed")
+	a.noteConfigurationChangesLocked(results)
 	a.lastReconcileError = nil
+	if partial {
+		a.lastReconcileResult = ptr("partial")
+		a.lastReconcileError = ptr("DSH_PARTIALLY_MANAGED")
+	}
 	if failed {
 		a.lastReconcileError = ptr("RECONCILE_FAILED")
 		a.lastReconcileResult = ptr("failed")
@@ -549,6 +564,9 @@ func (a *App) operationOnce(ctx context.Context, kind contracts.RemoteCommandTyp
 		}
 	}
 	a.logConfigResults("operation", results)
+	a.mu.Lock()
+	a.noteConfigurationChangesLocked(results)
+	a.mu.Unlock()
 	if e != nil {
 		a.logConfigFailure("operation", e)
 	}
@@ -563,6 +581,12 @@ func (a *App) operationOnce(ctx context.Context, kind contracts.RemoteCommandTyp
 	if kind == contracts.RemoteCommandTypeDisableProxy {
 		op.State = contracts.ClientOperationStateDisabled
 		code = "PROXY_DISABLED"
+		for _, result := range results {
+			if result.AgentType == int(contracts.AgentTypeDeepSeekHarness) && result.Changed {
+				code = "PROXY_DISABLED_RELOAD_REQUIRED"
+				break
+			}
+		}
 	}
 	if failed {
 		if kind == contracts.RemoteCommandTypeDisableProxy {
@@ -1322,6 +1346,14 @@ func (a *App) Observe(rec proxy.Record, status int, outcome string, d time.Durat
 		}
 	}
 	a.activity[id] = item
+	if outcome == "SUCCESS" && status >= 200 && status < 300 && rec.Method == "POST" && isInferenceRequest(rec.Inbound) && rec.PolicyVersion == a.policy.PolicyVersion && !rec.Started.Before(a.configurationChangedAt[id]) {
+		_, previouslyObserved := a.inference[id]
+		a.inference[id] = inferenceObservation{At: now, PolicyVersion: rec.PolicyVersion, RouteID: rec.Route.RouteID, Original: rec.Route.OriginalBaseURL, Injected: rec.Route.InjectedBaseURL}
+		delete(a.reloadRequired, id)
+		if !previouslyObserved {
+			a.inventoryGeneration.Add(1)
+		}
+	}
 	a.mu.Unlock()
 	a.logRequest(rec, status, outcome, d)
 }
@@ -1465,6 +1497,7 @@ func (a *App) Heartbeat(ctx context.Context) (contracts.HeartbeatV2Request, erro
 			}
 		}
 		item := contracts.AgentEndpointAsset{AssetID: id, UserSID: ep.SID, AgentFamily: ep.Family, ConfigurationSource: contracts.AgentConfigurationSource(ep.Source), ProviderID: ptr(provider), IsCurrent: ep.Current, OriginalTargetBaseURL: ptr(audit.RedactURL(ep.OriginalBaseURL)), EffectiveConfiguredBaseURL: ptr(audit.RedactURL(ep.EffectiveBaseURL)), AllowlistBypassed: ep.Bypassed, RouteStatus: contracts.RouteStatus(ep.RouteStatus), ObservedAtUTC: now, WireAPI: endpointWireAPI(ep.Family, ep.ProviderID)}
+		item.VerificationReasonCode = ep.ErrorCode
 		if endpoint != "" {
 			item.EndpointID = &endpoint
 		}
@@ -1474,6 +1507,7 @@ func (a *App) Heartbeat(ctx context.Context) (contracts.HeartbeatV2Request, erro
 		if ep.LocalRouteURL != "" {
 			item.LocalRouteURL = ptr(ep.LocalRouteURL)
 		}
+		a.verifyEndpoint(&item, routes)
 		out.Endpoints = append(out.Endpoints, item)
 		a.mu.RLock()
 		activity, ok := a.activity[id]

@@ -1,5 +1,14 @@
 # EndpointAIProxy 项目地图
 
+2026-11-06 已收到 0.2.21 r2 Win11 独立验收材料并[完成复核](docs/WINDOWS-0221-INDEPENDENT-REVIEW-20261106.md)。
+生命周期、控制时延及八小时进程/资源采样有有效证据；DSH 真实推理接管不通过，
+磁盘/日志总量与其他原生、发行和容量门禁未关闭。0.2.21 冻结包未改写；
+后续 **0.2.22 r2** 已构建，Linux 542 通过、43 跳过，控制端同 schema 补丁及新网关版本 43
+已部署；31 台在线均回执新版本，其中 8 台旧 .NET 的 CC Switch 校准失败未关闭。
+DSH 官方 API-key 动态目录契约仍阻断。当前包、原生待验与运行态统一见
+[接管与控制流程结果](docs/TAKEOVER-CONTROL-0222-RESULT.md)。
+下列 2026-11-04 的未安装/未回传描述保留为当时记录，不覆盖本次 Win11 进展。
+
 2026-11-04 已完成授权灰度控制端升级至 0.1.26/schema 5；原生 Linux 回归、最终包演练、
 实际备份恢复和切换范围见[灰度验证记录](server/docs/GRAY-LINUX-VALIDATION-20261104.md)。
 当前优化实现、交付包摘要和未通过的门禁统一见
@@ -9,7 +18,8 @@
 回归通过，完整浏览器和真实终端验收仍以当前结果记录为准。
 同日 16:42 已补齐[本地账号实际启用](server/docs/LOCAL-ADMIN-GRAY-20261104.md)：HTTPS 8443、
 旧管理 Token 入口关闭、客户端/管理后端分进程和连接预算；终端 8080 协议及凭据保留。
-原 14:21 观察已因部署变更中断，新布局 8 小时观察于 16:55 重新开始，尚未完成。
+原 14:21 观察因部署变更中断；16:55 新布局观察后来完成 481 个样本，不能覆盖 11-06 补丁
+或作为容量验收。新补丁的观察状态以上述接管结果为准。
 独立 Windows/Mac 的执行矩阵、附件要求和可填写模板见
 [测试要求](docs/CLIENT-0221-TEST-REQUIREMENTS.md)及
 [测试报告模板](docs/CLIENT-0221-TEST-REPORT-TEMPLATE.md)。
@@ -103,7 +113,7 @@ r14 辅助维护仍失败；进一步补齐 Desktop 引用范围与通用 Node �
 
 | 组件 | 当前定位 | 事实来源 |
 |---|---|---|
-| Go 客户端 0.2.21 r2 | Win/Mac 共用核心的候选实现，原生发行和长稳待验 | [Go 模块](go-client/go.mod)、[当前交付结果](docs/OPTIMIZATION-CURRENT-RESULT.md)、[完成度核对](docs/OPTIMIZATION-COMPLETION-AUDIT-20261103.md) |
+| Go 客户端 0.2.22 | 接管与控制流程修复候选，原生发行和长稳待验；0.2.21 报告保留对照 | [Go 模块](go-client/go.mod)、[当前交付结果](docs/OPTIMIZATION-CURRENT-RESULT.md)、[完成度核对](docs/OPTIMIZATION-COMPLETION-AUDIT-20261103.md) |
 | .NET 客户端 0.1.22 | 兼容基线与回退实现；不能因 Go 候选存在而删除 | [客户端项目](src/Sf.EndpointAI.Client.Service/Sf.EndpointAI.Client.Service.csproj)、[原 MSI](installer/Sf.EndpointAI.Setup/Package.wxs) |
 | Python 服务端 0.1.26 / schema 5 | 当前授权灰度控制面；原生测试、备份恢复、切换及索引维护通过，容量和长稳待验 | [灰度记录](server/docs/GRAY-LINUX-VALIDATION-20261104.md)、[升级边界](deployment/README-SERVER-UPGRADE-0.1.26.md) |
 | Python 服务端历史 r77 源码 | 不含随后 Linux 搜索修复及显式灰度路径；可选 schema 6 仍未启用 | [当前交付结果](docs/OPTIMIZATION-CURRENT-RESULT.md)、[轮换边界](server/docs/CREDENTIAL-ROTATION-CANDIDATE.md) |

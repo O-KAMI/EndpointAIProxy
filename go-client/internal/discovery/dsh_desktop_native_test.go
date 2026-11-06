@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"endpointai/client/internal/contracts"
 	"endpointai/client/internal/platform"
 )
 
@@ -30,7 +29,7 @@ func TestInstalledWindowsDesktopAccountRuntime(t *testing.T) {
 		t.Skip("native Desktop fixture not requested")
 	}
 	version, verified := dshDesktopAccountRuntime(executable)
-	if !verified || !contracts.DSHDesktopAccountVersionSupported(version) {
+	if !verified || version == "" {
 		t.Fatal("installed Desktop account runtime not verified", version)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

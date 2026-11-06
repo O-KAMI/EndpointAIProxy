@@ -12,10 +12,15 @@ import (
 	"syscall"
 )
 
-func DefaultDataRoot() string                           { return "/Library/Application Support/SF/EndpointAIProxy" }
-func ReadMachineSetting(name string) (string, error)    { return "", nil }
-func IsElevated() (bool, error)                         { return os.Geteuid() == 0, nil }
-func ResolveUserID(sid string) string                   { return strings.TrimPrefix(sid, "macos:") }
+func DefaultDataRoot() string                        { return "/Library/Application Support/SF/EndpointAIProxy" }
+func ReadMachineSetting(name string) (string, error) { return "", nil }
+func IsElevated() (bool, error)                      { return os.Geteuid() == 0, nil }
+func ResolveUserID(sid string) string {
+	if !strings.HasPrefix(sid, "macos:") {
+		return ""
+	}
+	return ShortAccountName(sid)
+}
 func RefreshUserIDs(ctx context.Context, sids []string) {}
 func Profiles(ctx context.Context) ([]Profile, error)   { return ProfilesAt(ctx, "/Users") }
 

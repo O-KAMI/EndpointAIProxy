@@ -3,7 +3,6 @@ package discovery
 import (
 	"context"
 	"encoding/json"
-	"endpointai/client/internal/contracts"
 	"endpointai/client/internal/platform"
 	"io"
 	"os"
@@ -19,6 +18,7 @@ type DSHMetadata struct {
 	OverlaysUnknown           bool
 	DesktopAccountVerified    bool
 	DesktopReferencesVerified bool
+	ProfileSDKVersions        map[string]string
 }
 
 // DSHProfileMetadata reads manifests only. roots must come from trusted deployment
@@ -67,7 +67,17 @@ func DSHProfileMetadata(ctx context.Context, profiles []platform.Profile, roots 
 		}
 		// Profile manifest version describes the profile package, not the CLI. Never
 		// use it to assert a compatible DSH runtime.
-		md := DSHMetadata{OverlaysUnknown: scanErr != nil}
+		md := DSHMetadata{OverlaysUnknown: scanErr != nil, ProfileSDKVersions: map[string]string{}}
+		for _, profile := range dshProfileSamples(p, profileRoots) {
+			plugin := resolveNodeManifest(filepath.Dir(profile.path), "@deepseek-ai/dsh-llm-pi-ai")
+			if plugin == "" {
+				continue
+			}
+			pi, err := manifest(resolveNodeManifest(filepath.Dir(plugin), "@earendil-works/pi-ai"))
+			if err == nil && pi["name"] == "@earendil-works/pi-ai" {
+				md.ProfileSDKVersions[filepath.Dir(profile.path)] = pi["version"]
+			}
+		}
 		md.DesktopAccountVerified = scanErr == nil && desktopAccountProvenance(running, p.SID)
 		for _, s := range running {
 			if s.sid == p.SID && s.inspectionUnknown {
@@ -99,7 +109,6 @@ func DSHProfileMetadata(ctx context.Context, profiles []platform.Profile, roots 
 				md.Version = v
 			}
 		}
-		md.DesktopAccountVerified = md.DesktopAccountVerified && contracts.DSHDesktopAccountVersionSupported(md.Version)
 		md.DesktopReferencesVerified = md.DesktopAccountVerified && desktopReferenceScopeKnown(running, p.SID)
 		out[p.SID] = md
 	}

@@ -1,10 +1,15 @@
 # 客户端与控制端规模优化：当前交付结果
 
-核对日期：2026-11-04。目标是 15 万安装、10 万日常在线，在线终端策略及远程
+核对日期：2026-11-06。目标是 15 万安装、10 万日常在线，在线终端策略及远程
 停用通常在 120 秒内完成并有回执。控制端和客户端长稳门槛为 **8 小时**；
 Windows 推广包按要求**不签名**。
-当前灰度控制端已升级为 **0.1.26/schema 5**，基于 r77 后的 Linux 修复和源码绑定灰度
-资格路径；Windows/Mac 客户端材料仍为 **0.2.21 r2**，未重建或安装。
+当前 Windows/Mac 候选为 **0.2.22 r2**，默认网关、异常保持配置、远程恢复、短账号、
+业务观测及目录采样已更新；具体实现、最终包摘要、灰度状态和阻断统一见
+[接管与控制流程实施结果](TAKEOVER-CONTROL-0222-RESULT.md)。新候选的全量 Go/vet、
+MSI 静态检查、Mac 两架构交叉编译及 Linux 回归通过，不代替独立终端验收。
+DSH 官方 API-key 动态模型目录与入口耦合仍为明确阻断，不能宣称全部 DSH 接管完成。
+0.2.21 r2 的 Win11 回传证据保留为[历史独立复核](WINDOWS-0221-INDEPENDENT-REVIEW-20261106.md)，
+不覆盖新包。以下 11-04 灰度升级及较早候选记录保留各自时点，当前状态以上述实施结果为准。
 Linux 完整回归 537 通过、39 跳过；最终更新包两项升级/回退及启动失败恢复演练均通过。
 2026-11-04 实际灰度升级、备份恢复、原记录摘要及索引维护通过，真实终端已恢复上报。
 具体包摘要、失败记录、部署时间与边界见[灰度验证记录](../server/docs/GRAY-LINUX-VALIDATION-20261104.md)。
@@ -17,8 +22,11 @@ Git 提交与推送不能替代发行门禁。本机 `private/` 证据和发行�
 
 本轮使用项目已配置的 i-jumper MCP，经堡垒机完成连接、传输及运维，无 root 提权。
 显式灰度模式要求匹配运行源码、依赖与升级器摘要，普通发行门禁仍保留 False。Windows/Mac
-测试团队按[独立终端测试要求](CLIENT-0221-TEST-REQUIREMENTS.md)和
-[报告模板](CLIENT-0221-TEST-REPORT-TEMPLATE.md)回传，不能把原生门禁视为已完成。
+测试团队按 [Windows 0.2.22 交接](WINDOWS-GO-0222-HANDOFF.md)、
+[Mac 0.2.22 交接](MACOS-GO-0222-HANDOFF.md)与
+[针对性复测及回传要求](CLIENT-0222-ADDITIONAL-ACCEPTANCE.md)执行。
+旧版[报告模板](CLIENT-0221-TEST-REPORT-TEMPLATE.md)可作结构参考，必须改填新包摘要及新增用例；
+不能把单台 Win11 部分通过视为原生门禁全部完成。
 
 本轮补齐默认关闭的[设备凭据两阶段轮换候选](../server/docs/CREDENTIAL-ROTATION-CANDIDATE.md)：
 可选 schema 6、Go 受保护的待更新状态、Token/封装原子切换、断点重试和人工恢复清理。
@@ -184,9 +192,9 @@ Mac arm64 和 x86_64 已交叉编译，未在 Mac 原生运行。0.2.19 历史�
 | --- | --- |
 | `EndpointAIDLP-Server-0.1.26-delivery.zip`（2026-11-04 gray r2） | `e513840258a323605fb393164baa8b6a73bf64dc62a69b9b8a2837e146406e36`（最终包演练及实际灰度切换通过，不代表目标容量通过） |
 | `EndpointAIDLP-Server-0.1.26-update.zip`（上述交付目录） | `84c1c8bfec3c0dd4d0e952b7cbc172c8847a35ef77532f56bf0e3a9069f99b9b`（与两项最终包生命周期测试、实际切换绑定） |
-| `EndpointAIProxy-Go-Windows-0.2.21-acceptance-20261103-r2.zip` | `b539fc09ae6a5d431e81ee456c3933aded754be2ab95ff19e2e9343e6ee76c82`（最新未签名验收包；212 个构建源输入核对，未安装） |
+| `EndpointAIProxy-Go-Windows-0.2.21-acceptance-20261103-r2.zip` | `b539fc09ae6a5d431e81ee456c3933aded754be2ab95ff19e2e9343e6ee76c82`（历史未签名验收包；212 个构建源输入，已有 Win11 部分验收） |
 | `EndpointAIProxy-Windows-0.2.21-synthetic-soak-20261103-r2.zip` | `b1de33ac37a0e1dcc43379dc9bc59594f8ee675d5c7a0ad75bad604f055fc4cd`（新增队列采样，绑定最新服务摘要，待独立终端执行） |
-| `EndpointAIProxy-Go-macOS-0.2.21-source-20261103-r2.zip` | `dc57fb9551a518a968e61969e18b2afb134957155be5373da4197158ad46d6c2`（最新无凭据源码；正式签名、公证及原生待执行） |
+| `EndpointAIProxy-Go-macOS-0.2.21-source-20261103-r2.zip` | `dc57fb9551a518a968e61969e18b2afb134957155be5373da4197158ad46d6c2`（历史无凭据源码；不含 0.2.22 接管修复） |
 | `EndpointAIProxy-Go-Windows-0.2.20-acceptance-20261103.zip` | `1ead709aaee7231912e77df0c1d90c89f36cb787eea53dbef7f497f1f0ef7530`（历史未签名验收包；不含 0.2.21 队列观测，未完成 IOA） |
 | `EndpointAIProxy-Windows-0.2.20-synthetic-soak-20261103.zip` | `3925b615996d332e2fd58f0d4bb7ef38aa7196e68898850924efbe1b49fb052b`（匹配最终服务摘要，待独立终端执行） |
 | `EndpointAIProxy-Go-macOS-0.2.20-source-20261103.zip` | `3b23dc98fbd6e13decfc56b621d0b76aaab26971bc2997785cad005d042ac8bf`（无真实凭据，签名、公证及原生验收由团队执行） |

@@ -40,8 +40,9 @@ $duration=if ($SmokeSeconds -gt 0) { $SmokeSeconds } else { 8*60*60 }
 $samples=0; $unhealthy=0; $restarts=0; $previousPid=0; $verifiedAt=-600; $complete=$false
 $previousElapsed=0.0; $previousUtc=[DateTimeOffset]::UtcNow; $continuityValid=$true; $maxGap=0.0
 $allowedGap=[Math]::Max(3*$SampleSeconds,$SampleSeconds+60)
+$directoryScanner=New-SoakDirectoryScanner (Join-Path $env:ProgramData 'SF/EndpointAIProxy')
 try {
-  while ($timer.Elapsed.TotalSeconds -lt $duration) {
+  while ($true) {
     $sampleElapsed=$timer.Elapsed.TotalSeconds; $sampleUtc=[DateTimeOffset]::UtcNow
     $gap=Get-SoakSampleGap $previousElapsed $previousUtc $sampleElapsed $sampleUtc $SampleSeconds
     $continuityValid=$continuityValid -and $gap.valid; $maxGap=[Math]::Max($maxGap,$gap.gapSeconds)
@@ -73,6 +74,7 @@ try {
       $sample.pid=$pidValue
       $sample.workingSetBytes=$process.WorkingSet64; $sample.privateBytes=$process.PrivateMemorySize64
       $sample.cpuSeconds=[Math]::Round($process.TotalProcessorTime.TotalSeconds,3)
+      $sample.threadCount=$process.Threads.Count;$sample.handleCount=$process.HandleCount
       $sample.auditHealthy=$healthState.auditHealthy
       $sample.controlHealthy=$healthState.controlHealthy
       $sample.lastControlSyncAtUtc=$healthState.lastControlSyncAtUtc
@@ -84,8 +86,12 @@ try {
       $sample.errorCode='SAMPLE_UNAVAILABLE_OR_MISMATCH'
       $unhealthy++
     }
+    $sample.directoryUsage=Get-SoakDirectoryUsage $directoryScanner
+    $sample.diskFreeBytes=@{}
+    foreach($drive in [IO.DriveInfo]::GetDrives()) {try {if($drive.IsReady -and $drive.DriveType -eq [IO.DriveType]::Fixed){$sample.diskFreeBytes[$drive.Name]=$drive.AvailableFreeSpace}}catch{}}
     $samples++
-    $writer.WriteLine(($sample | ConvertTo-Json -Compress)); $writer.Flush()
+    $writer.WriteLine(($sample | ConvertTo-Json -Depth 8 -Compress)); $writer.Flush()
+    if($sampleElapsed -ge $duration){break}
     $remaining=$duration-$timer.Elapsed.TotalSeconds
     if ($remaining -gt 0) { Start-Sleep -Milliseconds ([int][Math]::Min($SampleSeconds*1000,[Math]::Ceiling($remaining*1000))) }
   }
@@ -93,7 +99,7 @@ try {
   $continuityValid=$continuityValid -and $gap.valid; $maxGap=[Math]::Max($maxGap,$gap.gapSeconds)
   $complete=$timer.Elapsed.TotalSeconds -ge $duration
 } finally {
-  $timer.Stop(); $writer.Dispose()
+  $timer.Stop(); $writer.Dispose(); Close-SoakDirectoryScanner $directoryScanner
   $summary=@{ schemaVersion=1; status=if (-not $complete) {'interrupted'} elseif (-not $continuityValid) {'observation-incomplete'} elseif ($SmokeSeconds -gt 0) {'smoke-completed'} else {'observation-completed'};
     msiSha256=$msiHash; expectedServiceSha256=$ExpectedServiceSha256.ToLowerInvariant(); productVersion=$version;
     elapsedSeconds=[Math]::Round($timer.Elapsed.TotalSeconds,3); samples=$samples; unhealthySamples=$unhealthy; observedPidChanges=$restarts;

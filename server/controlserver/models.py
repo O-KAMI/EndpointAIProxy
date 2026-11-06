@@ -2,7 +2,7 @@
 from __future__ import annotations
 from datetime import datetime
 from enum import Enum
-from typing import Any, Annotated
+from typing import Any, Annotated, Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -335,6 +335,11 @@ class AgentEndpointAsset(Contract):
     allowlistBypassed: bool
     routeStatus: RouteStatus
     observedAtUtc: datetime
+    verificationState: Literal["unverified", "observed", "unsupported", "error"] | None = Field(default=None, exclude_if=lambda value: value is None)
+    verificationReasonCode: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    reloadRequired: bool = Field(default=False, exclude_if=lambda value: value is False)
+    lastInferenceObservedAtUtc: datetime | None = Field(default=None, exclude_if=lambda value: value is None)
+    observedPolicyVersion: Int64 | None = Field(default=None, exclude_if=lambda value: value is None)
 
 class ProxyActivityAsset(Contract):
     assetId: UUID

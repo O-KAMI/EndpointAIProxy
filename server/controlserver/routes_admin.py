@@ -7,6 +7,7 @@ from .models import (PolicyUpdateRequest, CreateRemoteCommandRequest, DeviceOnli
 from .security import utcnow
 from .validation import ApiProblem, validate_policy
 from .analytics import drill_down, online_state
+from .database import short_account_name
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin/v1")
 admin_bp.before_request(token_required("admin")(lambda: None))
@@ -47,6 +48,10 @@ def analytics_devices():
     query = analytics_query()
     skip, take = pagination(50)
     filters = {key: request.args.get(key) for key in ("kind", "key", "search", "agent", "provider", "anomaly", "allowlist", "employeeExact")}
+    if filters["employeeExact"]:
+        filters["employeeExact"] = short_account_name(filters["employeeExact"])
+        if not filters["employeeExact"]:
+            raise ApiProblem("QUERY_INVALID", "An exact account search requires a nonempty short account.")
     now = utcnow()
     snapshot = request.args.get("snapshot", "0")
     if snapshot not in ("0", "1"):

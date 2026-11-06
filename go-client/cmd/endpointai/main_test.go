@@ -55,6 +55,19 @@ func TestOptionIsolationAndInvalidInputs(t *testing.T) {
 	}
 }
 
+func TestManagementAPIRequiresMarkedIsolatedProfile(t *testing.T) {
+	isolatedOptions(t)
+	t.Setenv("SF_PROXY_ENABLE_MANAGEMENT_API", "true")
+	t.Setenv("SF_PROXY_MANAGEMENT_TOKEN", "synthetic-management-token-more-than-32")
+	if _, err := parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SF_PROXY_E2E_PROFILE_ROOT", "")
+	if _, err := parse(nil); err == nil {
+		t.Fatal("management API accepted real user profiles")
+	}
+}
+
 func TestCodexExclusionDeploymentOption(t *testing.T) {
 	isolatedOptions(t)
 	t.Setenv("SF_PROXY_EXCLUDE_CODEX", "true")

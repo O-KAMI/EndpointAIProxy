@@ -56,7 +56,7 @@ if(calls!==0||!el('assetFreshness').textContent.includes('回车')||!vm.runInCon
 el('search').onkeydown({key:'Enter',preventDefault:()=>prevented=true});
 if(calls!==1||sandbox.assetSkip!==0||!prevented||vm.runInContext('assetSearchDirty',sandbox))throw Error('Enter did not submit the first page');
 el('searchMode').value='employee';el('searchMode').onchange();
-if(calls!==1||!el('search').placeholder.includes('完整工号'))throw Error('mode change submitted a pending search');
+if(calls!==1||!el('search').placeholder.includes('完整账号'))throw Error('mode change submitted a pending search');
 if(!html.includes("$('refreshList').onclick=refreshAssets;"))throw Error('button must submit from the first page');
 if(!html.includes("if(activePage==='assets'&&!assetSearchDirty)loadAssetPage();"))throw Error('automatic refresh must wait for a pending search');
 if(!html.includes("if(assetSearchDirty){refreshAssets();return}assetSkip=skip;loadAssetPage()"))throw Error('paging a pending search must start at page one');

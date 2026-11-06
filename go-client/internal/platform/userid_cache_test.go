@@ -31,14 +31,14 @@ func TestUserIDCacheDoesNotResolveOnRequestAndMergesRefresh(t *testing.T) {
 	var calls atomic.Int32
 	started, release := make(chan struct{}), make(chan struct{})
 	lookup := func(s string) (string, error) { calls.Add(1); close(started); <-release; return "SF123456", nil }
-	if got := c.resolve("SID"); got != "SID" || calls.Load() != 0 {
+	if got := c.resolve("SID"); got != "" || calls.Load() != 0 {
 		t.Fatal("request performed native lookup")
 	}
 	c.refresh(context.Background(), []string{"SID"}, lookup)
 	<-started
 	for i := 0; i < 100; i++ {
 		c.refresh(context.Background(), []string{"SID"}, lookup)
-		if c.resolve("SID") != "SID" {
+		if c.resolve("SID") != "" {
 			t.Fatal("unexpected cache miss fallback")
 		}
 	}
@@ -82,11 +82,11 @@ func TestUserIDCacheCancellationBoundsAndFailureTTL(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if c.resolve("blocked") != "blocked" {
+	if c.resolve("blocked") != "" {
 		t.Fatal("late cancelled result cached")
 	}
 	c.refresh(context.Background(), []string{"failed"}, func(string) (string, error) { return "", errors.New("synthetic") })
-	awaitUserID(t, c, "failed", "failed")
+	awaitUserID(t, c, "failed", "")
 	c.mu.RLock()
 	ttl := c.entries["failed"].refreshAfter.Sub(c.entries["failed"].refreshed)
 	c.mu.RUnlock()

@@ -71,7 +71,7 @@ class Config:
         self.HMAC_TEXT = setting("auth.policy-hmac-key", "SF_CONTROL_POLICY_HMAC_KEY", "")
         self.ED25519_SEED_TEXT = setting("auth.policy-ed25519-seed", "SF_CONTROL_POLICY_ED25519_SEED", "")
         self.ROUTE_MODE = setting("policy.route-mode", "SF_CONTROL_ROUTE_MODE", "FixedGateway")
-        self.GATEWAY_ORIGIN = setting("policy.gateway-origin", "SF_CONTROL_GATEWAY_ORIGIN", "http://security-proxy.sf-express.com")
+        self.GATEWAY_ORIGIN = setting("policy.gateway-origin", "SF_CONTROL_GATEWAY_ORIGIN", "http://network-dlp-aigw.sf-express.com:80")
         self.ALLOW_INSECURE_GATEWAY = boolean("policy.allow-insecure-gateway", "SF_CONTROL_ALLOW_INSECURE_GATEWAY", "true")
         self.POLL_INTERVAL = int(setting("policy.poll-interval-seconds", "SF_CONTROL_POLL_INTERVAL_SECONDS", "60"))
         self.HEARTBEAT_INTERVAL = int(setting("policy.heartbeat-interval-seconds", "SF_CONTROL_HEARTBEAT_INTERVAL_SECONDS", "60"))

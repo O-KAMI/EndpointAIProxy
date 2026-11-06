@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -50,15 +51,17 @@ func TestRealDSHNodeLaunchWithSpacesAndChinese(t *testing.T) {
 				}
 				seen := false
 				for _, s := range samples {
-					if s.sid == p.SID && s.kind == DeepSeekHarness && s.collector == "running-process" {
+					if s.sid == p.SID && s.kind == DeepSeekHarness && s.collector == "running-process" && s.path == entry+" (PID "+strconv.Itoa(cmd.Process.Pid)+")" {
+						if s.version != DSHSupportedVersion || !tc.unknown && s.launchProfile != "web" || s.launchOverridesUnknown != tc.unknown {
+							t.Fatalf("incorrect launched process metadata: version=%s profile=%s unknown=%t", s.version, s.launchProfile, s.launchOverridesUnknown)
+						}
 						seen = true
 					}
 				}
 				if seen {
-					md := DSHProfileMetadata(ctx, []platform.Profile{p}, nil)[p.SID]
-					if md.Version != DSHSupportedVersion || md.OverlaysUnknown != tc.unknown {
-						t.Fatalf("incorrect metadata: %+v", md)
-					}
+					// Unrelated, unreadable Node processes on the build host may
+					// conservatively mark the whole inventory incomplete. Assert
+					// only the native process launched by this test.
 					return
 				}
 				select {

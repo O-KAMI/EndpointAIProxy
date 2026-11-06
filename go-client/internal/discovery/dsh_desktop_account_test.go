@@ -15,8 +15,9 @@ func TestDesktopAccountRequiresMatchingPackagedPlugins(t *testing.T) {
 		version, changedPlugin string
 		want                   bool
 	}{
-		{"0.2.1-rc.2", "", true},
-		{"0.2.1-rc.3", "", true},
+		// Manifest-only fixtures carry no reviewed implementation contract.
+		{"0.2.1-rc.2", "", false},
+		{"0.2.1-rc.3", "", false},
 		{"0.2.1-rc.4", "", false},
 		{"0.2.1-rc.3", "dsh-desktop-host", false},
 		{"0.2.1-rc.3", "dsh-app-boot", false},

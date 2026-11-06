@@ -1,9 +1,10 @@
 package discovery
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
-	"endpointai/client/internal/contracts"
 	"endpointai/client/internal/platform"
 	"io"
 	"os"
@@ -56,7 +57,7 @@ func dshASARManifest(path string) (map[string]string, error) {
 	return manifest, err
 }
 
-func dshASARPackage(path, packagePath string) (map[string]string, error) {
+func dshASARFile(path, packagePath string) ([]byte, error) {
 	f, e := os.Open(path)
 	if e != nil {
 		return nil, e
@@ -127,8 +128,16 @@ func dshASARPackage(path, packagePath string) (map[string]string, error) {
 	if start > stat.Size() || entry.Size > stat.Size()-start {
 		return nil, io.ErrUnexpectedEOF
 	}
+	return io.ReadAll(io.NewSectionReader(f, start, entry.Size))
+}
+
+func dshASARPackage(path, packagePath string) (map[string]string, error) {
+	body, e := dshASARFile(path, packagePath)
+	if e != nil {
+		return nil, e
+	}
 	var raw map[string]json.RawMessage
-	if e = json.NewDecoder(io.NewSectionReader(f, start, entry.Size)).Decode(&raw); e != nil {
+	if e = json.Unmarshal(body, &raw); e != nil {
 		return nil, e
 	}
 	out := map[string]string{}
@@ -166,15 +175,37 @@ func dshDesktopAccountRuntime(path string) (string, bool) {
 		}
 	}
 	root, err := dshASARManifest(asar)
-	if err != nil || root["name"] != "@deepseek-ai/dsh-desktop" || !contracts.DSHDesktopAccountVersionSupported(root["version"]) {
+	if err != nil || root["name"] != "@deepseek-ai/dsh-desktop" || root["version"] == "" {
 		return "", false
 	}
 	for _, name := range []string{"dsh-llm-deepseek-account", "dsh-deepseek-account-platform", "dsh-desktop-host", "dsh-app-boot"} {
 		manifest, err := dshASARPackage(asar, "dsh/node_modules/@deepseek-ai/"+name+"/package.json")
-		if err != nil || manifest["name"] != "@deepseek-ai/"+name || manifest["version"] != root["version"] {
+		if err != nil || manifest["name"] != "@deepseek-ai/"+name {
 			return "", false
+		}
+		// Product release strings are not a wire contract. Accept a new product
+		// version when its reviewed implementation is unchanged.
+		if name != "dsh-app-boot" {
+			body, err := dshASARFile(asar, "dsh/node_modules/@deepseek-ai/"+name+"/lib/index.js")
+			if err != nil || !reviewedDesktopModule(name, body) {
+				return "", false
+			}
 		}
 	}
 	desktopAccounts.Store(asar, desktopManifestStamp{size: info.Size(), modified: info.ModTime().UnixNano(), version: root["version"]})
 	return root["version"], true
+}
+
+func reviewedDesktopModule(name string, body []byte) bool {
+	digest := sha256.Sum256(body)
+	hash := hex.EncodeToString(digest[:])
+	switch name {
+	case "dsh-desktop-host":
+		return hash == "6ae7cb9d57516b73c8aa4317c514ed81d28f2680efcee56d8faf2e588bb28c48"
+	case "dsh-deepseek-account-platform":
+		return hash == "3b82b41e3e94566e43105a2552c0a4804983be39e1e16ad8b0d0646c76ec0057"
+	case "dsh-llm-deepseek-account":
+		return hash == "f4f9d77e82a6800b56884f8d31e4f21d18214e3625368ae2572c1cf35a4200d4" || hash == "93fb25a1183cc99e66ad8fddbeec235b1abb4d70add06791c832acf71f4f9f82"
+	}
+	return false
 }

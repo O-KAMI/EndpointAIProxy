@@ -273,7 +273,7 @@ func (m *Manager) dshAccountProfile(ctx context.Context, p Profile, doc *dshDocu
 		return m.detachAccount(ctx, p, doc, current, record, journalPath, result)
 	}
 	profileRelative, profileErr := filepath.Rel(filepath.Join(p.Home, ".dsh", "profiles", "desktop"), filepath.Dir(doc.path))
-	if !p.DSHDesktopAccountVerified && record != nil || !contracts.DSHDesktopAccountVersionSupported(p.DSHVersion) || profileErr != nil || profileRelative != "." {
+	if !p.DSHDesktopAccountVerified && record != nil || profileErr != nil || profileRelative != "." {
 		return fail("DSH_DESKTOP_ACCOUNT_UNVERIFIED")
 	}
 	if doc.referencesUnknown {

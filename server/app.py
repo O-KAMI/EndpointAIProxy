@@ -169,7 +169,10 @@ def create_app(config=None, store=None, check_database=True):
         g.control_error_code = exc.code if exc.code in CONTROL_ERROR_CODES else 'OTHER'
         if exc.status == 401:
             return response(status=401)
-        return response({"error": {"code": exc.code, "message": exc.message, "traceId": None}}, exc.status)
+        error = {"code": exc.code, "message": exc.message, "traceId": g.get("trace_id")}
+        if exc.details:
+            error["details"] = exc.details
+        return response({"error": error}, exc.status)
 
     @app.errorhandler(PoolExhausted)
     def pool_exhausted(exc):

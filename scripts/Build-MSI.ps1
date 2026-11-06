@@ -3,7 +3,7 @@
 param(
   [string]$CredentialsFile,
   [ValidatePattern('^\d+\.\d+\.\d+$')][string]$ProductVersion = '0.2.6',
-  [Parameter(Mandatory=$true)][string]$GatewayOrigin,
+  [string]$GatewayOrigin = 'http://network-dlp-aigw.sf-express.com:80',
   [switch]$EnableDSH,
   [string]$OutputDirectory,
   [ValidatePattern('^[A-Fa-f0-9]{40}$')][string]$SigningCertificateThumbprint,
@@ -27,6 +27,7 @@ try {
   $gatewayUri = $null
   if (-not [Uri]::TryCreate($GatewayOrigin,[UriKind]::Absolute,[ref]$gatewayUri) -or $gatewayUri.Scheme -notin @('http','https') -or $gatewayUri.UserInfo -ne '' -or $gatewayUri.Query -ne '' -or $gatewayUri.Fragment -ne '' -or $gatewayUri.AbsolutePath -ne '/' -or $gatewayUri.Host.EndsWith('.invalid') -or $GatewayOrigin -match '[\s;"<>]') { throw 'Supply a real HTTP(S) gateway origin without credentials, path, query or fragment.' }
   $GatewayOrigin = $gatewayUri.GetLeftPart([UriPartial]::Authority)
+  if ($gatewayUri.IsDefaultPort -and $gatewayUri.Scheme -eq 'http') { $GatewayOrigin += ':80' }
   $dshArgument = $EnableDSH.IsPresent.ToString().ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = Join-Path $root 'artifacts/private-windows-go' }
   $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
@@ -42,7 +43,7 @@ try {
   $inputs=@(& git -C $root ls-files --cached --others --exclude-standard -- go-client scripts installer/Sf.EndpointAI.Go.Setup installer/Sf.EndpointAI.Setup global.json Directory.Build.props Directory.Packages.props Build-MSI.cmd Upgrade-Client.cmd Install-Silent.cmd Detect-Installed.cmd | Sort-Object -Unique)
   if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate build source inputs.' }
   foreach ($relative in $inputs) {
-    if ($relative -match '(\.go|\.mod|\.sum|\.ps1|\.wxs|\.wixproj|\.cmd|\.props|global\.json)$') {
+    if ($relative -match '(\.go|\.mod|\.sum|\.ps1|\.wxs|\.wixproj|\.cmd|\.props|global\.json)$' -and (Test-Path -LiteralPath (Join-Path $root $relative) -PathType Leaf)) {
       $sourceFiles+=@{path=$relative;sha256=(Get-Sha256 (Join-Path $root $relative))}
     }
   }

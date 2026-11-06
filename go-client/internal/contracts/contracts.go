@@ -792,6 +792,11 @@ type AgentEndpointAsset struct {
 	AllowlistBypassed          bool                     `json:"allowlistBypassed"`
 	RouteStatus                RouteStatus              `json:"routeStatus"`
 	ObservedAtUTC              time.Time                `json:"observedAtUtc"`
+	VerificationState          string                   `json:"verificationState,omitempty"`
+	VerificationReasonCode     string                   `json:"verificationReasonCode,omitempty"`
+	ReloadRequired             bool                     `json:"reloadRequired,omitempty"`
+	LastInferenceObservedAtUTC *time.Time               `json:"lastInferenceObservedAtUtc,omitempty"`
+	ObservedPolicyVersion      *int64                   `json:"observedPolicyVersion,omitempty"`
 }
 type ProxyActivityAsset struct {
 	AssetID                          string            `json:"assetId"`

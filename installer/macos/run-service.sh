@@ -15,5 +15,5 @@ export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${DOTNET_BUNDLE_EXTRACT_BASE_DIR:-$SF_PRO
 exec "/Library/Application Support/SF/EndpointAIProxy/bin/Sf.EndpointAI.Client.Service" \
   --auto-attach=true \
   --route-mode=FixedGateway \
-  --gateway-origin=http://gateway.example.invalid \
+  --gateway-origin=http://network-dlp-aigw.sf-express.com:80 \
   --allow-insecure-gateway=true

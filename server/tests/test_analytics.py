@@ -724,11 +724,34 @@ def test_employee_exact_http_uses_same_semantics_with_or_without_cache(mysql_sto
         if cached:
             refresh_cache(mysql_store)
         assert lookup(employeeExact="TEST")["total"] == 1
+        assert lookup(employeeExact="SF/TEST")["total"] == 1
+        assert lookup(employeeExact="SF\\TEST")["total"] == 1
         assert lookup(employeeExact="tes")["total"] == 0
         assert lookup(employeeExact="测试终端")["total"] == 0
         assert lookup(search="tes")["total"] == 1
         assert lookup(employeeExact="test", provider="missing")["total"] == 0
         assert ("cacheAgeSeconds" in lookup(employeeExact="test")) == cached
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+def test_account_search_normalizes_domains_mac_and_local_admin(mysql_store, indexed):
+    import json
+    from pathlib import Path
+    from controlserver.models import HeartbeatV2Request
+    from controlserver.security import utcnow
+
+    body = json.loads((Path(__file__).parent / "fixtures/dotnet-v0.1.19.json").read_text())["heartbeat"]
+    body["users"] = [dict(sid="S-1-local", accountName="HOST\\Administrator"),
+                     dict(sid="S-1-domain", accountName="SF/00123"),
+                     dict(sid="macos:alice", accountName="macos:alice")]
+    mysql_store.heartbeat(HeartbeatV2Request.model_validate(body), 60, "127.0.0.1")
+    if indexed:
+        mysql_store.ensure_scale_indexes()
+        mysql_store.cfg.EMPLOYEE_INDEX = True
+    for account in ("Administrator", "00123", "alice"):
+        rows, _, total = mysql_store.analytics_page("all", None, utcnow(), 0, 25, employee_search=account)
+        assert total == 1
+        assert account in rows[0]["device"]["employeeIds"]
 
 
 def test_refresh_releases_database_lock_when_writer_cleanup_fails(mysql_store, monkeypatch):

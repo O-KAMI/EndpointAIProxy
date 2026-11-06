@@ -40,7 +40,7 @@ func trustedDSH(p Profile) Profile {
 func dshOnly(rs []Result) []Result {
 	var out []Result
 	for _, r := range rs {
-		if r.AgentType == dshAgent {
+		if r.AgentType == dshAgent && r.ErrorCode != "DSH_DEFAULT_PROVIDER_UNVERIFIED" {
 			out = append(out, r)
 		}
 	}
@@ -179,7 +179,6 @@ func TestDSHUnsupportedNeverChangesConfig(t *testing.T) {
 		name, patch, homePatch, version, sdk string
 		overlay                              bool
 	}{
-		{name: "unknown version", patch: dshDeepSeekFixture, version: "0.3.0"},
 		{name: "unknown overlays", patch: dshDeepSeekFixture, version: DSHSupportedVersion, overlay: true},
 		{name: "home override", patch: dshDeepSeekFixture, version: DSHSupportedVersion, homePatch: "- id: llm-deepseek\n  config: {baseURL: https://override.example}\n"},
 		{name: "dynamic expression", patch: "- id: llm-deepseek\n  config: {baseURL: !!js process.env.BASE_URL}\n", version: DSHSupportedVersion},

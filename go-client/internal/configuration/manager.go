@@ -25,6 +25,7 @@ type Profile struct {
 	DSHOverlaysUnknown           bool
 	DSHVersion                   string
 	DSHPiAIVersion               string
+	DSHProfileSDKVersions        map[string]string
 	DSHDesktopAccountVerified    bool
 	DSHDesktopReferencesVerified bool
 }
@@ -608,7 +609,7 @@ func (m *Manager) references(ctx context.Context, p Profile) ([]string, error) {
 			return nil, problem("DSH_ROUTE_REFERENCES_UNVERIFIED")
 		}
 		for _, doc := range docs {
-			if doc.profile == "desktop" && contracts.DSHDesktopAccountVersionSupported(p.DSHVersion) {
+			if doc.profile == "desktop" && (p.DSHDesktopAccountVerified || m.hasAccountJournal(p, doc)) {
 				accountRefs, err := desktopAccountReferences(p, doc)
 				if err != nil {
 					return nil, err

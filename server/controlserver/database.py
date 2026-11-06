@@ -59,16 +59,18 @@ def decode(value):
     return json.loads(value) if isinstance(value, (str, bytes)) else value
 
 
+def short_account_name(value):
+    account = re.split(r"[\\/]", (value or "").strip())[-1]
+    return account[6:] if account.lower().startswith("macos:") else account
+
+
 def employee_ids(users):
     values = set()
-    system_accounts = {"system", "local service", "network service", "administrator", "guest",
+    system_accounts = {"system", "local service", "network service",
                        "defaultaccount", "wdagutilityaccount", "root", "daemon"}
     for user in users or []:
-        account = (user.get("accountName") or "").strip()
-        if account.lower().startswith("sf\\"):
-            account = account[3:]
+        account = short_account_name(user.get("accountName"))
         if (account and account != user.get("sid") and not re.match(r"S-\d-", account, re.I)
-                and not account.lower().startswith("macos:")
                 and account.rsplit("\\", 1)[-1].lower() not in system_accounts):
             values.add(account)
     return sorted(values)
@@ -447,17 +449,21 @@ class ControlStore:
             if overrides is not None and "allowlistedBaseUrls" in overrides:
                 try:
                     overrides["allowlistedBaseUrls"] = normalize_allowlist(overrides["allowlistedBaseUrls"])
-                except ValueError as exc:
-                    raise ApiProblem("POLICY_ALLOWLIST_INVALID", str(exc)) from None
+                except ValueError:
+                    raise ApiProblem("POLICY_ALLOWLIST_INVALID", "The Base URL allowlist contains an invalid entry or exceeds the accepted limit.",
+                                     details=[{"field": "overrides.allowlistedBaseUrls", "reason": "value_error"}]) from None
             if overrides is not None:
                 overrides = domain_policy(overrides, overrides=True)
+                field = "overrides.allowlistedDomains"
                 try:
                     if "allowlistedDomains" in overrides:
                         overrides["allowlistedDomains"] = normalize_domains(overrides["allowlistedDomains"])
                     if "routingRules" in overrides:
+                        field = "overrides.routingRules"
                         overrides["routingRules"] = normalize_routing_rules(overrides["routingRules"])
-                except ValueError as exc:
-                    raise ApiProblem("POLICY_RULES_INVALID", str(exc)) from None
+                except ValueError:
+                    raise ApiProblem("POLICY_RULES_INVALID", "Policy domains or routing rules are invalid, duplicated or exceed the accepted limit.",
+                                     details=[{"field": field, "reason": "value_error"}]) from None
             effective = {**policy, **(overrides or {}),
                 "schemaVersion": current["effectivePolicy"]["schemaVersion"],
                 "policyVersion": self._next_policy_version(cur, policy), "issuedAtUtc": timestamp(utcnow())}
@@ -1212,7 +1218,8 @@ class ControlStore:
             args.extend((hostname_search, hostname_search))
         if employee_search:
             raw_account = "REGEXP_REPLACE(u.account_name,'^[[:space:]]+|[[:space:]]+$','')"
-            account = f"IF(LEFT(LOWER({raw_account}),3)=CONCAT('sf',CHAR(92)),SUBSTRING({raw_account},4),{raw_account})"
+            short_account = f"SUBSTRING_INDEX(REPLACE({raw_account},CHAR(92),'/'),'/',-1)"
+            account = f"IF(LEFT(LOWER({short_account}),6)='macos:',SUBSTRING({short_account},7),{short_account})"
             if self.cfg.EMPLOYEE_INDEX:
                 conditions.append("""(INSTR(LOWER(h.hostname),LOWER(%s))>0
                     OR INSTR(LOWER(h.device_id),LOWER(%s))>0 OR EXISTS (
@@ -1229,9 +1236,8 @@ class ControlStore:
                         sid LONGTEXT PATH '$.sid' NULL ON EMPTY)) u
                     WHERE {account}<>'' AND BINARY {account}<>BINARY COALESCE(u.sid,'')
                     AND NOT REGEXP_LIKE({account}, '^S-[0-9]-', 'i')
-                    AND LEFT(LOWER({account}),6)<>'macos:'
                     AND LOWER(SUBSTRING_INDEX({account},CHAR(92),-1)) COLLATE utf8mb4_bin NOT IN
-                        ('system','local service','network service','administrator','guest','defaultaccount','wdagutilityaccount','root','daemon')
+                        ('system','local service','network service','defaultaccount','wdagutilityaccount','root','daemon')
                     AND INSTR(LOWER({account}) COLLATE utf8mb4_bin,LOWER(%s) COLLATE utf8mb4_bin)>0))""")
             args.extend((employee_search, employee_search, employee_search))
         where = " WHERE " + " AND ".join(conditions) if conditions else ""

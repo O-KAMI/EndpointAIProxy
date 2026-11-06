@@ -18,6 +18,7 @@ type Endpoint struct {
 	Source                                                                                             int
 	Current, Bypassed                                                                                  bool
 	RouteStatus                                                                                        int
+	ErrorCode                                                                                          string
 }
 
 func (m *Manager) Inspect(ctx context.Context, profiles []Profile) ([]Endpoint, error) {

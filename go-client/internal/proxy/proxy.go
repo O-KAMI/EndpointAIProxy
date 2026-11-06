@@ -39,6 +39,8 @@ type Record struct {
 	Failure                                   observability.Detail
 	CaptureFinalizeMilliseconds               float64
 	Preflight                                 bool
+	PolicyVersion                             int64
+	Method                                    string
 }
 
 type Capture interface {
@@ -153,7 +155,7 @@ func routeTarget(route contracts.Route, suffix, query string, policy contracts.P
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	record := Record{RequestID: UUID(), Started: time.Now().UTC(), Inbound: r.URL.RequestURI(), Preflight: true}
+	record := Record{RequestID: UUID(), Started: time.Now().UTC(), Inbound: r.URL.RequestURI(), Method: r.Method, Preflight: true}
 	var capture Capture
 	status, outcome, code := 0, "PROXY_INTERNAL_ERROR", ""
 	defer func() {
@@ -221,6 +223,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		policy = h.Policy()
 	}
+	record.PolicyVersion = policy.PolicyVersion
 	if !policy.Enabled || (h.Enabled != nil && !h.Enabled()) {
 		reject(500, "PROXY_INTERNAL_ERROR", "PROXY_DISABLED", "The local proxy failed.", nil)
 		return

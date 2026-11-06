@@ -70,7 +70,8 @@ def test_rule_validation_includes_inherited_gateway_and_duplicates(config):
 
 def test_employee_ids_preserve_leading_zero_deduplicate_and_reject_fallbacks():
     assert employee_ids([dict(accountName=a) for a in ["00123", "SF\\00123", "00456", "", "SYSTEM",
-        "S-1-5-21-123", "macos:example", "Administrator", "A00123", "NT AUTHORITY\\SYSTEM"]]) == ["00123", "00456", "A00123"]
+        "S-1-5-21-123", "macos:example", "Administrator", "A00123", "NT AUTHORITY\\SYSTEM",
+        "SF/00123", "HOST\\local-admin", "HOST\\Guest"]]) == ["00123", "00456", "A00123", "Administrator", "Guest", "example", "local-admin"]
     assert employee_ids(None) == []
 
 

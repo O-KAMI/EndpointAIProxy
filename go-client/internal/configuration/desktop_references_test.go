@@ -28,7 +28,7 @@ func TestDesktopAccountAllowsUnreferencedCodexRouteRetirement(t *testing.T) {
 }
 
 func TestDesktopAccountReferenceScanRemainsConservative(t *testing.T) {
-	for _, kind := range []string{"version", "unverified-host", "overlay", "base", "include", "dynamic", "url-reference"} {
+	for _, kind := range []string{"unverified-host", "overlay", "base", "include", "dynamic", "url-reference"} {
 		t.Run(kind, func(t *testing.T) {
 			m, p, path, _ := desktopAccountFixture(t)
 			writeFixture(t, configPath(p, "codex"), "openai_base_url='https://codex.example/v1'\n")
@@ -43,8 +43,6 @@ func TestDesktopAccountReferenceScanRemainsConservative(t *testing.T) {
 				}
 			}
 			switch kind {
-			case "version":
-				p.DSHVersion = "unknown"
 			case "unverified-host":
 				p.DSHDesktopAccountVerified = false
 			case "overlay":

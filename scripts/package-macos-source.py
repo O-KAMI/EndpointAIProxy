@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = ["go-client/go.mod", "go-client/go.sum", "go-client/README.md",
          "go-client/scripts/build.sh", "go-client/scripts/validate_credentials.py",
          "go-client/scripts/soak.py", "go-client/scripts/benchmark.py",
+         "go-client/scripts/observe_resources.py", "go-client/scripts/test_observe_resources.py",
          "installer/macos/Build-Pkg.sh", "installer/macos/InstallerSupport.sh",
          "installer/macos/Notarize-Pkg.sh", "installer/macos/preinstall", "installer/macos/postinstall",
          "installer/macos/run-service.sh", "installer/macos/com.sf.endpointai.proxy.plist",

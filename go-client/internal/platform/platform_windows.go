@@ -45,17 +45,14 @@ func lookupUserID(sid string) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	account, domain, _, e := s.LookupAccount("")
+	account, _, _, e := s.LookupAccount("")
 	if e != nil || strings.TrimSpace(account) == "" {
 		if e == nil {
 			e = errors.New("ACCOUNT_NAME_UNAVAILABLE")
 		}
 		return "", e
 	}
-	if strings.EqualFold(domain, "SF") || domain == "" {
-		return account, nil
-	}
-	return domain + `\` + account, nil
+	return ShortAccountName(account), nil
 }
 func ReadMachineSetting(name string) (string, error) {
 	k, e := registry.OpenKey(registry.LOCAL_MACHINE, `Software\SF\EndpointAIProxy`, registry.QUERY_VALUE|registry.WOW64_64KEY)

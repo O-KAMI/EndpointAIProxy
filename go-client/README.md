@@ -1,9 +1,16 @@
-# EndpointAIProxy Go 客户端候选版 0.2.21
+# EndpointAIProxy Go 客户端候选版 0.2.22
 
 此模块提供 Windows x64、macOS arm64/x64 共用的 Go 后台客户端。旧 .NET 0.1.22
 源码、构建入口和回退材料继续保留；候选实现尚不等于已批准替换生产客户端。
-当前验收材料为 0.2.21 r2；摘要及实际验证范围以[当前交付结果](../docs/OPTIMIZATION-CURRENT-RESULT.md)为准。
-Windows 未签名为确认要求；双端原生安装、真实业务与 8 小时长稳尚未完成。
+当前接管修复候选为 0.2.22；摘要及实际验证范围以[当前交付结果](../docs/OPTIMIZATION-CURRENT-RESULT.md)为准。
+0.2.21 r2 的 Win11 报告保留作对照，不替代新候选。Windows 按要求不签名，
+新候选的双端原生安装、真实业务和八小时长稳仍须独立完成。
+
+客户端异常仅记录上报，不自动恢复原厂配置；控制端签名 `disableProxy` 持久停用并恢复配置，
+`enableProxy` 重新接管。应用需要重载时提示手动重启，不自动结束 DSH。
+DSH 以配置和受审查的插件契约判断兼容，不因产品版本字符串变化直接拒绝。
+rc.3 默认 API-key provider 的动态模型目录存在原始域名依赖，透明接管仍阻断；
+不支持入口和未发生实际推理的入口分别显示不支持/尚未验证，见[针对性复测](../docs/CLIENT-0222-ADDITIONAL-ACCEPTANCE.md)。
 
 工作树的设备凭据两阶段更新使用平台保护的待更新记录，提交时原子更新 Token 和传输绑定；
 需要固定服务端公钥的 HTTPS、设备传输 V2 和服务端明确协商，生产 HTTP 配置不会启用。
@@ -23,9 +30,10 @@ Windows 未签名为确认要求；双端原生安装、真实业务与 8 小时
 - Claude JSON、Codex TOML、CC Switch provider/endpoint 支持备份、并发检测和恢复；
   Qoder 只发现。用户后续修改不会被强制覆盖，恢复失败时保留原上游记录。
 - 支持原厂/网关切换、精确 BaseURL 白名单、SSE/取消、资产上报、远程启停与重放恢复。
-- 网关工号使用 `x-sf-userid`，客户端生成的请求编号使用 `x-request-id`，覆盖来访同名值。
+- 网关用户短账号使用 `x-sf-userid`，客户端生成的请求编号使用 `x-request-id`，覆盖来访同名值。
   其他元数据头及 HMAC 字段值/顺序不变；原厂透传行为保持不变。
-  网关读取新工号头，缺失时兼容旧客户端的 `X-SF-AI-User-Id`。
+  域前缀移除，SID 继续区分身份；解析失败不用 SID 充当账号。
+  网关缺失新账号头时兼容旧客户端的 `X-SF-AI-User-Id`。
 - 捕获组合上限 50 MiB；捕获保留 7 天/512 MiB。运行日志按 20 MiB 分片，保留 7 天，
   按 50/45 MiB 高低水位清理。关闭的文件交给单一后台压缩任务。
 - Mac 诊断使用原生系统命令；单项失败不丢失健康证据。诊断 schema v2 包含有界、脱敏的
@@ -46,10 +54,10 @@ cd go-client
 GOPROXY=https://goproxy.cn,direct go mod download
 go test -race ./...
 go vet ./...
-VERSION=0.2.21 sh scripts/build.sh
+VERSION=0.2.22 sh scripts/build.sh
 ```
 
-按以上显式版本构建时，输出位于 `artifacts/go-client/0.2.21/`，含三种架构的服务和 Windows 无窗口安装辅助程序。
+按以上显式版本构建时，输出位于 `artifacts/go-client/0.2.22/`，含三种架构的服务和 Windows 无窗口安装辅助程序。
 脚本的默认版本仍为历史值；正式构建须显式传入版本，版本号本身不证明与冻结验收包相同。
 没有 .NET runtime payload。测试只使用临时数据；原生服务安装另在隔离终端验收。
 
