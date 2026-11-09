@@ -1,5 +1,11 @@
 # EndpointAIProxy 项目地图
 
+2026-11-09 已复核控制端 11-06 补丁的完整八小时观察：481 样本、采样健康异常为 0，
+8 个观测进程身份不变；RSS 净增 3.43 MiB、末 30 分钟仅增 4 KiB。低负载健康观察通过，
+不代表容量或新版原生门禁通过。实时 21 台在线均回执版本 43，5 台旧 .NET 校准失败仍在；
+当前版本清单尚无 0.2.22。原始范围、资源趋势及限制见
+[八小时复核](server/docs/GRAY-POSTPATCH-OBSERVATION-20261109.md)。
+
 2026-11-06 已收到 0.2.21 r2 Win11 独立验收材料并[完成复核](docs/WINDOWS-0221-INDEPENDENT-REVIEW-20261106.md)。
 生命周期、控制时延及八小时进程/资源采样有有效证据；DSH 真实推理接管不通过，
 磁盘/日志总量与其他原生、发行和容量门禁未关闭。0.2.21 冻结包未改写；
@@ -115,7 +121,7 @@ r14 辅助维护仍失败；进一步补齐 Desktop 引用范围与通用 Node �
 |---|---|---|
 | Go 客户端 0.2.22 | 接管与控制流程修复候选，原生发行和长稳待验；0.2.21 报告保留对照 | [Go 模块](go-client/go.mod)、[当前交付结果](docs/OPTIMIZATION-CURRENT-RESULT.md)、[完成度核对](docs/OPTIMIZATION-COMPLETION-AUDIT-20261103.md) |
 | .NET 客户端 0.1.22 | 兼容基线与回退实现；不能因 Go 候选存在而删除 | [客户端项目](src/Sf.EndpointAI.Client.Service/Sf.EndpointAI.Client.Service.csproj)、[原 MSI](installer/Sf.EndpointAI.Setup/Package.wxs) |
-| Python 服务端 0.1.26 / schema 5 | 当前授权灰度控制面；原生测试、备份恢复、切换及索引维护通过，容量和长稳待验 | [灰度记录](server/docs/GRAY-LINUX-VALIDATION-20261104.md)、[升级边界](deployment/README-SERVER-UPGRADE-0.1.26.md) |
+| Python 服务端 0.1.26 / schema 5 | 当前授权灰度控制面；低负载八小时复核完成，目标容量与长稳待验 | [灰度记录](server/docs/GRAY-LINUX-VALIDATION-20261104.md)、[八小时复核](server/docs/GRAY-POSTPATCH-OBSERVATION-20261109.md)、[升级边界](deployment/README-SERVER-UPGRADE-0.1.26.md) |
 | Python 服务端历史 r77 源码 | 不含随后 Linux 搜索修复及显式灰度路径；可选 schema 6 仍未启用 | [当前交付结果](docs/OPTIMIZATION-CURRENT-RESULT.md)、[轮换边界](server/docs/CREDENTIAL-ROTATION-CANDIDATE.md) |
 | ASP.NET 控制服务 | 保留的独立原型，不等同于生产 Python 服务端 | [原型源码](src/Sf.EndpointAI.ControlServer) |
 
